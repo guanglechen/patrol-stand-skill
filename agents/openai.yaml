@@ -1,0 +1,7 @@
+interface:
+  display_name: "巡检标准层级设计顾问"
+  short_description: "构建层级优先的巡检标准工作簿。"
+  default_prompt: "使用 $inspection-standard-hierarchy-consultant 基于这些材料设计层级优先的巡检标准工作簿。"
+
+policy:
+  allow_implicit_invocation: true
