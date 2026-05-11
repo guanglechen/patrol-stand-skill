@@ -50,7 +50,13 @@ export class Sandbox {
       "--pids-limit",
       "256",
       "-v",
-      `${repoRoot}:/skill:ro`,
+      `${path.join(repoRoot, "SKILL.md")}:/skill/SKILL.md:ro`,
+      "-v",
+      `${path.join(repoRoot, "scripts")}:/skill/scripts:ro`,
+      "-v",
+      `${path.join(repoRoot, "references")}:/skill/references:ro`,
+      "-v",
+      `${path.join(repoRoot, "pi")}:/skill/pi:ro`,
       "-v",
       `${workspace}:/workspace:rw`,
       "-w",
@@ -74,8 +80,17 @@ export class Sandbox {
     if (path.isAbsolute(arg) && arg.startsWith(workspace)) {
       return arg.replace(workspace, "/workspace");
     }
-    if (path.isAbsolute(arg) && arg.startsWith(repoRoot)) {
-      return arg.replace(repoRoot, "/skill");
+    if (path.isAbsolute(arg) && arg.startsWith(path.join(repoRoot, "scripts"))) {
+      return arg.replace(path.join(repoRoot, "scripts"), "/skill/scripts");
+    }
+    if (path.isAbsolute(arg) && arg.startsWith(path.join(repoRoot, "references"))) {
+      return arg.replace(path.join(repoRoot, "references"), "/skill/references");
+    }
+    if (path.isAbsolute(arg) && arg.startsWith(path.join(repoRoot, "pi"))) {
+      return arg.replace(path.join(repoRoot, "pi"), "/skill/pi");
+    }
+    if (path.isAbsolute(arg) && arg === path.join(repoRoot, "SKILL.md")) {
+      return "/skill/SKILL.md";
     }
     if (arg.startsWith(os.tmpdir())) return arg;
     return arg;

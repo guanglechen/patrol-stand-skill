@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AppDatabase } from "./db.js";
@@ -41,32 +42,19 @@ export class LocalPatrolRunner {
       }
     });
 
+    await this.stage(taskId, "material_parse", "材料解析", async () => {
+      await this.extractMaterials(taskId);
+    });
+
     const boundaryAnswer = [...manifest.answers].reverse().find((answer) => answer.askId === BOUNDARY_ASK_ID);
     if (!boundaryAnswer) {
       await this.askBoundary(taskId);
       return;
     }
     if (boundaryAnswer.content === "need_more_upload" && !this.hasSupplementAfter(manifest, boundaryAnswer.createdAt)) {
-      this.db.updateTaskStatus(taskId, "waiting_user", BOUNDARY_ASK_ID);
-      await eventBus.emitTaskEvent({
-        taskId,
-        type: "agent_ask",
-        message: "等待补充职责或标准材料",
-        level: "warning",
-        ask: {
-          id: BOUNDARY_ASK_ID,
-          title: "等待补充职责或标准材料",
-          body: "你选择了继续补充材料。请上传职责、对象清单或历史标准后，再点击启动/继续。",
-          inputKind: "attachment",
-          required: true
-        }
-      });
+      await this.askForSupplement(taskId);
       return;
     }
-
-    await this.stage(taskId, "material_parse", "材料解析", async () => {
-      await this.tool(taskId, "document_parse", "Parsed text messages and attachment manifest for domain signals.");
-    });
     await this.stage(taskId, "boundary_design", "职责边界与对象层级设计", async () => {
       await this.tool(taskId, "inspection-standard-hierarchy-consultant", "Built a defensible L0-L2 skeleton with review markers.");
     });
@@ -113,10 +101,15 @@ export class LocalPatrolRunner {
   }
 
   private async askBoundary(taskId: string): Promise<void> {
+    const digest = this.tryReadDigest(taskId);
+    const gaps = this.askGaps(digest);
+    const body = gaps.length
+      ? `材料解析后仍存在这些阻塞点：${gaps.join("；")}。请选择本轮如何继续。`
+      : "材料已有部分职责、对象或标准信号，但仍需确认第一版边界处理方式。请选择本轮如何继续。";
     const ask: AgentAsk = {
       id: BOUNDARY_ASK_ID,
       title: "确认第一版职责边界处理方式",
-      body: "当前材料尚未明确所有部门/专业边界。请选择 Agent 本轮如何继续。",
+      body,
       inputKind: "single_select",
       required: true,
       options: [
@@ -147,6 +140,32 @@ export class LocalPatrolRunner {
       level: "warning",
       ask
     });
+  }
+
+  private async askForSupplement(taskId: string): Promise<void> {
+    this.db.updateTaskStatus(taskId, "waiting_user", BOUNDARY_ASK_ID);
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "agent_ask",
+      message: "等待补充职责或标准材料",
+      level: "warning",
+      ask: {
+        id: BOUNDARY_ASK_ID,
+        title: "等待补充职责或标准材料",
+        body: "你选择了继续补充材料。请上传职责边界、对象清单、历史标准或频次规则后，再点击启动/继续。",
+        inputKind: "attachment",
+        required: true
+      }
+    });
+  }
+
+  private askGaps(digest: ReturnType<LocalPatrolRunner["tryReadDigest"]>): string[] {
+    if (!digest) return ["未形成材料解析摘要"];
+    const gaps = [];
+    if (!digest.signals.responsibility.length) gaps.push("缺少责任部门/角色/外包边界信号");
+    if (!digest.signals.objects.length) gaps.push("缺少设施设备/系统/区域对象信号");
+    if (!digest.signals.standards.length) gaps.push("缺少标准依据/频次/风险/异常闭环信号");
+    return gaps;
   }
 
   private hasSupplementAfter(manifest: TaskManifest, timestamp: string): boolean {
@@ -195,14 +214,36 @@ export class LocalPatrolRunner {
     await this.registerArtifact(taskId, "任务 Manifest", "manifest", path.join(workspace, "task-manifest.json"));
   }
 
+  private async extractMaterials(taskId: string): Promise<void> {
+    const workspace = taskWorkspaceDir(taskId);
+    const manifestPath = path.join(workspace, "task-manifest.json");
+    const digestPath = path.join(workspace, "source-digest.json");
+    const sandbox = new Sandbox(taskId);
+    await eventBus.emitTaskEvent({ taskId, type: "tool_started", tool: "extract_materials.py", message: "extract_materials.py started", level: "info" });
+    const result = await sandbox.runPython(["scripts/extract_materials.py", "--manifest", manifestPath, "--output", digestPath]);
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "tool_completed",
+      tool: "extract_materials.py",
+      message: `Source digest generated via ${result.mode} sandbox.`,
+      level: "success",
+      data: { stdout: result.stdout, stderr: result.stderr, command: result.command }
+    });
+    await this.registerArtifact(taskId, "材料解析摘要", "trace", digestPath);
+  }
+
   private buildWorkbookPayload(manifest: TaskManifest): Record<string, unknown> {
     const fileNames = manifest.files.map((file) => file.originalName).join("、") || "用户文本输入";
+    const digest = this.tryReadDigest(manifest.task.id);
+    const signalSummary = digest
+      ? `材料数 ${digest.material_count}；责任信号 ${digest.signals.responsibility.join("、") || "待确认"}；对象信号 ${digest.signals.objects.join("、") || "待确认"}`
+      : "";
     const userText = manifest.messages
       .filter((message) => message.role === "user" && !message.askId)
       .map((message) => message.content)
       .join("；")
       .slice(0, 500);
-    const source = [fileNames, userText].filter(Boolean).join("；");
+    const source = [fileNames, userText, signalSummary].filter(Boolean).join("；");
     return {
       hierarchy_rows: [
         {
@@ -340,5 +381,21 @@ export class LocalPatrolRunner {
       level: "success",
       artifact
     });
+  }
+
+  private tryReadDigest(taskId: string): null | {
+    material_count: number;
+    signals: { responsibility: string[]; objects: string[]; standards: string[] };
+  } {
+    try {
+      const digestPath = path.join(taskWorkspaceDir(taskId), "source-digest.json");
+      const data = JSON.parse(readFileSync(digestPath, "utf8")) as {
+        material_count: number;
+        signals: { responsibility: string[]; objects: string[]; standards: string[] };
+      };
+      return data;
+    } catch {
+      return null;
+    }
   }
 }

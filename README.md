@@ -38,10 +38,13 @@ docker compose up --build
 
 任务沙箱容器本身只挂载：
 
-- `/skill`：当前 skill 包，只读
+- `/skill/SKILL.md`：巡检标准 skill 入口，只读
+- `/skill/scripts`：工作簿脚本，只读
+- `/skill/references`：领域参考资料，只读
+- `/skill/pi`：Pi package 适配文件，只读
 - `/workspace`：当前任务 workspace，可读写
 
-任务沙箱不挂载宿主 HOME、SSH key、云凭证或 Docker socket。
+任务沙箱不挂载宿主 HOME、SSH key、云凭证、Docker socket 或 repo 下的 `data/` 目录。
 
 ## Pi Package
 
@@ -85,6 +88,12 @@ Pi runner 会通过 `npx pi` 加载：
 ```bash
 npm run smoke
 docker compose config
+```
+
+Pi package 结构检查：
+
+```bash
+npm run check:pi
 ```
 
 工作簿契约校验：

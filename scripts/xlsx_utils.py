@@ -44,6 +44,12 @@ def _cell_ref(row_index: int, column_index: int) -> str:
     return f"{_index_to_column_letters(column_index)}{row_index}"
 
 
+def _range_ref(row_count: int, column_count: int) -> str:
+    if row_count <= 0 or column_count <= 0:
+        return "A1:A1"
+    return f"A1:{_cell_ref(row_count, column_count - 1)}"
+
+
 def _shared_strings(zf: ZipFile) -> list[str]:
     try:
         root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
@@ -111,32 +117,77 @@ def read_workbook(path: str | Path) -> dict[str, list[list[str]]]:
     return result
 
 
-def _inline_string_cell(ref: str, value: str) -> str:
+def _inline_string_cell(ref: str, value: str, style: int | None = None) -> str:
     escaped = escape(value)
-    return f'<c r="{ref}" t="inlineStr"><is><t>{escaped}</t></is></c>'
+    style_attr = f' s="{style}"' if style is not None else ""
+    return f'<c r="{ref}"{style_attr} t="inlineStr"><is><t>{escaped}</t></is></c>'
 
 
-def _number_cell(ref: str, value: int | float) -> str:
-    return f'<c r="{ref}"><v>{value}</v></c>'
+def _number_cell(ref: str, value: int | float, style: int | None = None) -> str:
+    style_attr = f' s="{style}"' if style is not None else ""
+    return f'<c r="{ref}"{style_attr}><v>{value}</v></c>'
+
+
+def _column_width(header: str) -> float:
+    compact = {"层级", "节点代号", "节点类型", "确认状态", "优先级", "状态", "适用代号", "类别代号"}
+    narrative = {
+        "设计理由",
+        "纳入边界",
+        "排除边界",
+        "覆盖对象",
+        "职责边界",
+        "缺口说明",
+        "问题描述",
+        "当前假设",
+        "需要用户补充",
+        "部件介绍描述",
+        "四级巡检项-典型巡检项（看什么/查什么）",
+        "说明",
+    }
+    if header in compact:
+        return 14
+    if header in narrative:
+        return 34
+    if len(header) >= 10:
+        return 24
+    return 18
+
+
+def _cols_xml(headers: list[object]) -> str:
+    nodes = []
+    for index, value in enumerate(headers, start=1):
+        width = _column_width(str(value))
+        nodes.append(f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>')
+    return f"<cols>{''.join(nodes)}</cols>"
 
 
 def _sheet_xml(rows: Iterable[Iterable[object]]) -> str:
+    materialized = [list(row) for row in rows]
     row_chunks: list[str] = []
-    for row_index, raw_row in enumerate(rows, start=1):
+    for row_index, raw_row in enumerate(materialized, start=1):
         cells: list[str] = []
         for column_index, value in enumerate(raw_row):
             if value is None or value == "":
                 continue
             ref = _cell_ref(row_index, column_index)
+            style = 1 if row_index == 1 else 2
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                cells.append(_number_cell(ref, value))
+                cells.append(_number_cell(ref, value, style))
             else:
-                cells.append(_inline_string_cell(ref, str(value)))
+                cells.append(_inline_string_cell(ref, str(value), style))
         row_chunks.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    headers = materialized[0] if materialized else []
+    filter_ref = _range_ref(max(len(materialized), 1), max(len(headers), 1))
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<worksheet xmlns="{MAIN_NS}">'
+        '<sheetViews><sheetView workbookViewId="0">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        '<selection pane="bottomLeft"/>'
+        '</sheetView></sheetViews>'
+        f"{_cols_xml(headers)}"
         f"<sheetData>{''.join(row_chunks)}</sheetData>"
+        f'<autoFilter ref="{filter_ref}"/>'
         "</worksheet>"
     )
 
@@ -224,11 +275,22 @@ def _styles_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<styleSheet xmlns="{MAIN_NS}">'
-        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<fonts count="2">'
+        '<font><sz val="11"/><name val="Calibri"/></font>'
+        '<font><b/><sz val="11"/><name val="Calibri"/><color rgb="FFFFFFFF"/></font>'
+        '</fonts>'
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF263C33"/><bgColor indexed="64"/></patternFill></fill>'
+        '</fills>'
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>'
+        '</cellXfs>'
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
         "</styleSheet>"
     )
