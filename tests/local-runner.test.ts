@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patrol-runner-"));
+process.env.DATA_DIR = tempDir;
+process.env.SANDBOX_MODE = "host";
+
+const { AppDatabase } = await import("../src/server/db.js");
+const { LocalPatrolRunner } = await import("../src/server/local-runner.js");
+const { eventBus } = await import("../src/server/events.js");
+
+const db = new AppDatabase();
+const runner = new LocalPatrolRunner(db);
+const now = new Date().toISOString();
+const taskId = randomUUID();
+
+db.createTask({
+  id: taskId,
+  title: "runner test",
+  status: "draft",
+  createdAt: now,
+  updatedAt: now,
+  waitingAskId: null
+});
+db.addMessage({
+  id: randomUUID(),
+  taskId,
+  role: "user",
+  content: "产业园设施设备巡检标准材料",
+  createdAt: now,
+  askId: null
+});
+
+await runner.run(taskId);
+assert.equal(db.getTask(taskId)?.status, "waiting_user");
+assert.ok((await eventBus.history(taskId)).some((event) => event.type === "agent_ask"));
+
+db.addMessage({
+  id: randomUUID(),
+  taskId,
+  role: "user",
+  content: "candidate_boundary",
+  askId: "boundary-confirmation",
+  createdAt: new Date().toISOString()
+});
+
+await runner.run(taskId);
+const artifacts = db.listArtifacts(taskId);
+assert.equal(db.getTask(taskId)?.status, "completed");
+assert.ok(artifacts.some((artifact) => artifact.kind === "workbook"));
+assert.ok(artifacts.some((artifact) => artifact.kind === "validation"));
+
+const uploadTaskId = randomUUID();
+db.createTask({
+  id: uploadTaskId,
+  title: "upload branch test",
+  status: "draft",
+  createdAt: now,
+  updatedAt: now,
+  waitingAskId: null
+});
+db.addMessage({
+  id: randomUUID(),
+  taskId: uploadTaskId,
+  role: "user",
+  content: "先分析巡检标准",
+  createdAt: now,
+  askId: null
+});
+await runner.run(uploadTaskId);
+db.addMessage({
+  id: randomUUID(),
+  taskId: uploadTaskId,
+  role: "user",
+  content: "need_more_upload",
+  askId: "boundary-confirmation",
+  createdAt: new Date().toISOString()
+});
+await runner.run(uploadTaskId);
+assert.equal(db.getTask(uploadTaskId)?.status, "waiting_user");
+
+await fs.rm(tempDir, { recursive: true, force: true });

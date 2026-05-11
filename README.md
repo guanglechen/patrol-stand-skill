@@ -1,0 +1,94 @@
+# Patrol Stand Pi Agent
+
+本仓库把巡检标准 skill 包扩展成本地可运行的 Pi Agent 原型：
+
+- WebChat/任务台：文本输入、附件上传、任务事件流、阻塞式 ask、产物下载。
+- 本地任务会话：`data/tasks/<taskId>/inputs|workspace|outputs`。
+- Pi 原生适配：`package.json` 中声明 Pi `skills`、`extensions`、`prompts`。
+- 沙箱执行：runner 优先使用 Docker per-task container；`SANDBOX_MODE=host` 可用于本地调试。
+- Excel 输出：复用 `scripts/render_workbook.py` 和 `scripts/validate_workbook.py`，最终产物为 `.xlsx`。
+
+## Local Run
+
+```bash
+npm install
+npm run build
+SANDBOX_MODE=host PATROL_RUNNER=local npm start
+```
+
+打开：
+
+```text
+http://127.0.0.1:8787
+```
+
+开发模式：
+
+```bash
+npm run dev
+```
+
+## Docker Run
+
+```bash
+docker compose up --build
+```
+
+`docker-compose.yml` 会把 Docker socket 挂到 Web/orchestrator 容器，用于启动每个任务的沙箱容器。内部 bridge 默认设置 `PATROL_BRIDGE_TOKEN`，用于阻止未授权页面直接调用 `/api/internal/*`。
+
+任务沙箱容器本身只挂载：
+
+- `/skill`：当前 skill 包，只读
+- `/workspace`：当前任务 workspace，可读写
+
+任务沙箱不挂载宿主 HOME、SSH key、云凭证或 Docker socket。
+
+## Pi Package
+
+Pi package manifest 在根 `package.json` 的 `pi` 字段中：
+
+- `pi/extensions/patrol-session-bridge.ts`
+- 当前目录的 `SKILL.md`
+- `pi/skills/excel-workbook-quality/SKILL.md`
+- `pi/prompts/patrol-agent.md`
+
+本机安装 Pi CLI 后，可按 Pi 本地 package 方式加载该目录。当前本地 Web runner 在 Pi CLI 不可用时仍可完成端到端验证。
+
+## Runner Modes
+
+默认使用本地 fallback runner，便于无模型密钥时验证 Web、ask、沙箱和 Excel 闭环：
+
+```bash
+PATROL_RUNNER=local npm start
+```
+
+启用 Pi runner：
+
+```bash
+PATROL_RUNNER=pi \
+PATROL_BRIDGE_TOKEN=local-dev-bridge-token \
+OPENAI_API_KEY=... \
+npm start
+```
+
+Pi runner 会通过 `npx pi` 加载：
+
+- `--extension pi/extensions/patrol-session-bridge.ts`
+- `--skill SKILL.md`
+- `--skill pi/skills/excel-workbook-quality`
+- `--append-system-prompt pi/prompts/patrol-agent.md`
+
+如果 Agent 触发 `ask_user_web`，任务会停在 `waiting_user`，用户在 WebChat 回答后再次点击“启动/继续”恢复。
+
+## Verification
+
+```bash
+npm run smoke
+docker compose config
+```
+
+工作簿契约校验：
+
+```bash
+python3 scripts/validate_workbook.py data/tasks/<taskId>/outputs/inspection-standard-workbook.xlsx
+```

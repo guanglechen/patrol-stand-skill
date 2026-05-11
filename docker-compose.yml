@@ -1,0 +1,15 @@
+services:
+  patrol-pi-agent:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      SANDBOX_MODE: docker
+      SANDBOX_IMAGE: python:3.13-slim
+      PATROL_BRIDGE_TOKEN: ${PATROL_BRIDGE_TOKEN:-local-dev-bridge-token}
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock

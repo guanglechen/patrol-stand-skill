@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 output/
 doc/*.xlsx
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+.playwright-mcp/

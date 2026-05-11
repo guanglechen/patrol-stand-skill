@@ -1,0 +1,62 @@
+{
+  "name": "patrol-stand-pi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Pi-powered patrol standard analysis agent with WebChat, sandboxed execution, and Excel workbook output.",
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:api dev:web",
+    "dev:api": "tsx src/server/index.ts",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "start": "node dist/server/src/server/index.js",
+    "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "tsx tests/session-store.test.ts && tsx tests/local-runner.test.ts",
+    "smoke": "npm run check && npm test"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^9.3.0",
+    "@fastify/static": "^8.3.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "fastify": "^5.6.2",
+    "lucide-react": "^0.561.0",
+    "npm-run-all": "^4.1.5",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "tsx": "^4.21.0",
+    "vite": "^7.2.7"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@types/node": "^24.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typebox": "^1.0.55",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "pi/extensions/patrol-session-bridge.ts"
+    ],
+    "skills": [
+      ".",
+      "pi/skills/excel-workbook-quality"
+    ],
+    "prompts": [
+      "pi/prompts/patrol-agent.md"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "inspection-standard",
+    "patrol",
+    "agent"
+  ]
+}
