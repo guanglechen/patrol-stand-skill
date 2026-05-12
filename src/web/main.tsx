@@ -446,10 +446,11 @@ interface StageItem {
   status: "running" | "completed" | "failed" | "pending";
 }
 
-const stageOrder = ["intake", "material_parse", "boundary_design", "workbook_build"];
+const stageOrder = ["intake", "material_parse", "analysis_plan", "boundary_design", "workbook_build"];
 const stageLabels: Record<string, string> = {
   intake: "材料接收",
   material_parse: "材料解析",
+  analysis_plan: "分析与计划确认",
   boundary_design: "职责边界与对象设计",
   workbook_build: "Excel 工作簿生成"
 };

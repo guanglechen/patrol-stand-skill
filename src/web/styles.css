@@ -237,6 +237,7 @@ button:disabled {
 .ask-box p {
   margin: 0;
   color: #d2decf;
+  white-space: pre-line;
 }
 
 .choice-stack {

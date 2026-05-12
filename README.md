@@ -8,6 +8,7 @@
 - 沙箱执行：runner 优先使用 Docker per-task container；`SANDBOX_MODE=host` 可用于本地调试。
 - Excel 输出：复用 `scripts/render_workbook.py` 和 `scripts/validate_workbook.py`，最终产物为 `.xlsx`。
 - LLM 分析：材料解析后进入 `llm_analysis` 阶段；配置 `KIMI_API_KEY` 后会通过 Pi CLI 调用 Kimi For Coding，配置 `OPENAI_API_KEY` 后会调用 OpenAI Responses API。
+- Agent 节奏：本地 runner 不再一次性批处理；默认先 ask 职责边界，再给出分析计划与执行模式，用户批准后才进入 LLM 分析和 Excel 生成。
 
 ## Local Run
 

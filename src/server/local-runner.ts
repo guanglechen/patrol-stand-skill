@@ -11,6 +11,8 @@ import type { AgentAsk, TaskArtifact, TaskManifest } from "./types.js";
 import { generateWorkbookCaseWithLlm, hasLlmConfig } from "./llm-client.js";
 
 const BOUNDARY_ASK_ID = "boundary-confirmation";
+const PLAN_ASK_ID = "execution-plan-approval";
+const APPROVE_EXECUTION = "approve_execute";
 
 export class LocalPatrolRunner {
   private readonly running = new Set<string>();
@@ -56,6 +58,23 @@ export class LocalPatrolRunner {
       await this.askForSupplement(taskId);
       return;
     }
+
+    const planAnswer = [...manifest.answers].reverse().find((answer) => answer.askId === PLAN_ASK_ID);
+    if (planAnswer?.content === "need_more_upload" && !this.hasSupplementAfter(manifest, planAnswer.createdAt)) {
+      await this.askPlanSupplement(taskId);
+      return;
+    }
+    if (planAnswer?.content === "revise_plan") {
+      await this.askPlanRevision(taskId);
+      return;
+    }
+    if (!planAnswer || planAnswer.content !== APPROVE_EXECUTION) {
+      await this.stage(taskId, "analysis_plan", "分析与执行计划", async () => {
+        await this.askExecutionPlan(taskId, manifest, boundaryAnswer.content, planAnswer?.content);
+      });
+      return;
+    }
+
     await this.stage(taskId, "boundary_design", "职责边界与对象层级设计", async () => {
       await this.runLlmAnalysis(taskId, manifest);
     });
@@ -158,6 +177,121 @@ export class LocalPatrolRunner {
         required: true
       }
     });
+  }
+
+  private async askExecutionPlan(
+    taskId: string,
+    manifest: TaskManifest,
+    boundaryMode: string,
+    revisionNote?: string
+  ): Promise<void> {
+    const workspace = taskWorkspaceDir(taskId);
+    await fs.mkdir(workspace, { recursive: true });
+    const planPath = path.join(workspace, "agent-execution-plan.md");
+    const planText = this.buildExecutionPlan(manifest, boundaryMode, revisionNote);
+    await fs.writeFile(planPath, planText, "utf8");
+    await this.registerArtifact(taskId, "Agent 执行计划", "trace", planPath);
+
+    const ask: AgentAsk = {
+      id: PLAN_ASK_ID,
+      title: "确认分析计划与执行模式",
+      body: planText,
+      inputKind: "single_select",
+      required: true,
+      options: [
+        {
+          label: "按计划执行",
+          value: APPROVE_EXECUTION,
+          description: "进入 Kimi/LLM 分析、工作簿结构生成、Excel 渲染和校验。",
+          recommended: true
+        },
+        {
+          label: "调整计划",
+          value: "revise_plan",
+          description: "先暂停，不生成 Excel；你可以补充计划调整意见后再运行。"
+        },
+        {
+          label: "继续补充材料",
+          value: "need_more_upload",
+          description: "暂停任务，继续上传职责边界、对象清单或标准依据。"
+        }
+      ],
+      defaultValue: APPROVE_EXECUTION
+    };
+    this.db.updateTaskStatus(taskId, "waiting_user", ask.id);
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "agent_ask",
+      message: ask.title,
+      level: "warning",
+      ask
+    });
+  }
+
+  private async askPlanRevision(taskId: string): Promise<void> {
+    this.db.updateTaskStatus(taskId, "waiting_user", PLAN_ASK_ID);
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "agent_ask",
+      message: "请补充计划调整意见",
+      level: "warning",
+      ask: {
+        id: PLAN_ASK_ID,
+        title: "请补充计划调整意见",
+        body: "请说明需要调整的职责边界、对象层级、输出范围或执行模式。提交后 Agent 会重新给出执行计划，不会直接生成 Excel。",
+        inputKind: "text",
+        required: true
+      }
+    });
+  }
+
+  private async askPlanSupplement(taskId: string): Promise<void> {
+    this.db.updateTaskStatus(taskId, "waiting_user", PLAN_ASK_ID);
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "agent_ask",
+      message: "等待补充计划所需材料",
+      level: "warning",
+      ask: {
+        id: PLAN_ASK_ID,
+        title: "等待补充计划所需材料",
+        body: "请继续上传职责边界、对象清单、历史标准或频次规则。上传后点击启动/继续，Agent 会重新分析并给出执行计划。",
+        inputKind: "attachment",
+        required: true
+      }
+    });
+  }
+
+  private buildExecutionPlan(manifest: TaskManifest, boundaryMode: string, revisionNote?: string): string {
+    const digest = this.tryReadDigest(manifest.task.id);
+    const fileNames = manifest.files.map((file) => file.originalName).join("、") || "无附件";
+    const responsibility = digest?.signals.responsibility.join("、") || "待确认";
+    const objects = digest?.signals.objects.join("、") || "待确认";
+    const standards = digest?.signals.standards.join("、") || "待确认";
+    const gaps = this.askGaps(digest);
+    const revision = revisionNote && revisionNote !== "revise_plan" && revisionNote !== "need_more_upload"
+      ? `\n已收到的计划调整意见：${revisionNote}`
+      : "";
+    return [
+      "我先不直接生成 Excel。下面是本轮分析计划，请确认后再进入执行。",
+      "",
+      `材料概况：${digest?.material_count ?? 0} 份材料；附件：${fileNames}`,
+      `边界处理选择：${boundaryMode}`,
+      `职责/专业信号：${responsibility}`,
+      `对象类型信号：${objects}`,
+      `标准/闭环信号：${standards}`,
+      gaps.length ? `当前缺口：${gaps.join("；")}` : "当前缺口：未发现硬阻塞，但仍按 needs_review 输出候选版本。",
+      revision,
+      "",
+      "执行计划：",
+      "1. 先按职责/专业覆盖边界形成 L1 候选边界，不直接铺开巡检项。",
+      "2. 再把对象类型整理成 L2/L3 骨架，并标记证据不足的节点。",
+      "3. 使用 Kimi/LLM 抽取对象、风险、频次和待确认项。",
+      "4. 用本地固定 workbook contract 展开 6 个 sheet。",
+      "5. 渲染 Excel 后运行校验，失败则停止并暴露错误。",
+      "",
+      "执行模式：批准后生成可审阅 Excel；不确定项保持 needs_review，不写 confirmed。"
+    ].filter(Boolean).join("\n");
   }
 
   private askGaps(digest: ReturnType<LocalPatrolRunner["tryReadDigest"]>): string[] {

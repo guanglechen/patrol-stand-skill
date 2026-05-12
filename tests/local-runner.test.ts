@@ -49,6 +49,20 @@ db.addMessage({
 });
 
 await runner.run(taskId);
+assert.equal(db.getTask(taskId)?.status, "waiting_user");
+assert.ok((await eventBus.history(taskId)).some((event) => event.ask?.id === "execution-plan-approval"));
+assert.ok(db.listArtifacts(taskId).some((artifact) => artifact.label === "Agent 执行计划"));
+
+db.addMessage({
+  id: randomUUID(),
+  taskId,
+  role: "user",
+  content: "approve_execute",
+  askId: "execution-plan-approval",
+  createdAt: new Date().toISOString()
+});
+
+await runner.run(taskId);
 const artifacts = db.listArtifacts(taskId);
 assert.equal(db.getTask(taskId)?.status, "completed");
 assert.ok(artifacts.some((artifact) => artifact.kind === "workbook"));
@@ -110,6 +124,17 @@ db.addMessage({
   role: "user",
   content: "candidate_boundary",
   askId: "boundary-confirmation",
+  createdAt: new Date().toISOString()
+});
+await runner.run(mockTaskId);
+assert.equal(db.getTask(mockTaskId)?.status, "waiting_user");
+assert.ok((await eventBus.history(mockTaskId)).some((event) => event.ask?.id === "execution-plan-approval"));
+db.addMessage({
+  id: randomUUID(),
+  taskId: mockTaskId,
+  role: "user",
+  content: "approve_execute",
+  askId: "execution-plan-approval",
   createdAt: new Date().toISOString()
 });
 await runner.run(mockTaskId);
