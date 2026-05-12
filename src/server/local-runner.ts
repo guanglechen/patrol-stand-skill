@@ -8,7 +8,7 @@ import { writeManifest } from "./manifest.js";
 import { repoRoot, taskOutputsDir, taskWorkspaceDir } from "./paths.js";
 import { Sandbox } from "./sandbox.js";
 import type { AgentAsk, TaskArtifact, TaskManifest } from "./types.js";
-import { generateWorkbookCaseWithLlm, hasLlmConfig } from "./llm-client.js";
+import { generatePlanningTraceWithLlm, generateWorkbookCaseWithLlm, hasLlmConfig } from "./llm-client.js";
 
 const BOUNDARY_ASK_ID = "boundary-confirmation";
 const PLAN_ASK_ID = "execution-plan-approval";
@@ -187,10 +187,12 @@ export class LocalPatrolRunner {
   ): Promise<void> {
     const workspace = taskWorkspaceDir(taskId);
     await fs.mkdir(workspace, { recursive: true });
+    const planningTrace = await this.runPlanningTrace(taskId, manifest);
     const planPath = path.join(workspace, "agent-execution-plan.md");
-    const planText = this.buildExecutionPlan(manifest, boundaryMode, revisionNote);
+    const planText = this.buildExecutionPlan(manifest, boundaryMode, revisionNote, planningTrace.summary);
     await fs.writeFile(planPath, planText, "utf8");
     await this.registerArtifact(taskId, "Agent 执行计划", "trace", planPath);
+    await this.registerArtifact(taskId, "Agent 多轮分析轨迹", "trace", planningTrace.tracePath);
 
     const ask: AgentAsk = {
       id: PLAN_ASK_ID,
@@ -228,6 +230,51 @@ export class LocalPatrolRunner {
     });
   }
 
+  private async runPlanningTrace(taskId: string, manifest: TaskManifest): Promise<{ summary: string; tracePath: string }> {
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "tool_started",
+      tool: "agent_material_inventory",
+      message: "agent_material_inventory started",
+      level: "info"
+    });
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "tool_completed",
+      tool: "agent_material_inventory",
+      message: `Indexed ${manifest.files.length} file(s), ${manifest.messages.length} message(s), and ${manifest.answers.length} answer(s).`,
+      level: "success"
+    });
+
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "tool_started",
+      tool: "agent_planning_loop",
+      message: "agent_planning_loop started",
+      level: "info"
+    });
+    const result = await generatePlanningTraceWithLlm(taskId, manifest);
+    for (const round of result.rounds) {
+      await eventBus.emitTaskEvent({
+        taskId,
+        type: "tool_completed",
+        tool: "agent_planning_loop",
+        message: `${round.label} completed via ${result.provider}/${result.model}.`,
+        level: "success",
+        data: { path: round.path }
+      });
+    }
+    await eventBus.emitTaskEvent({
+      taskId,
+      type: "tool_completed",
+      tool: "agent_planning_loop",
+      message: `Planning trace completed via ${result.provider}/${result.model}.`,
+      level: "success",
+      data: { tracePath: result.tracePath }
+    });
+    return { summary: result.summary, tracePath: result.tracePath };
+  }
+
   private async askPlanRevision(taskId: string): Promise<void> {
     this.db.updateTaskStatus(taskId, "waiting_user", PLAN_ASK_ID);
     await eventBus.emitTaskEvent({
@@ -262,7 +309,12 @@ export class LocalPatrolRunner {
     });
   }
 
-  private buildExecutionPlan(manifest: TaskManifest, boundaryMode: string, revisionNote?: string): string {
+  private buildExecutionPlan(
+    manifest: TaskManifest,
+    boundaryMode: string,
+    revisionNote?: string,
+    planningSummary?: string
+  ): string {
     const digest = this.tryReadDigest(manifest.task.id);
     const fileNames = manifest.files.map((file) => file.originalName).join("、") || "无附件";
     const responsibility = digest?.signals.responsibility.join("、") || "待确认";
@@ -289,6 +341,7 @@ export class LocalPatrolRunner {
       "3. 使用 Kimi/LLM 抽取对象、风险、频次和待确认项。",
       "4. 用本地固定 workbook contract 展开 6 个 sheet。",
       "5. 渲染 Excel 后运行校验，失败则停止并暴露错误。",
+      planningSummary ? `\nAgent 多轮分析摘要：\n${planningSummary.slice(0, 1600)}` : "",
       "",
       "执行模式：批准后生成可审阅 Excel；不确定项保持 needs_review，不写 confirmed。"
     ].filter(Boolean).join("\n");

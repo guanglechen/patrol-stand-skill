@@ -8,6 +8,8 @@ const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patrol-runner-"));
 process.env.DATA_DIR = tempDir;
 process.env.SANDBOX_MODE = "host";
 delete process.env.LLM_PROVIDER;
+delete process.env.KIMI_API_KEY;
+delete process.env.OPENAI_API_KEY;
 
 const { AppDatabase } = await import("../src/server/db.js");
 const { LocalPatrolRunner } = await import("../src/server/local-runner.js");
@@ -52,6 +54,8 @@ await runner.run(taskId);
 assert.equal(db.getTask(taskId)?.status, "waiting_user");
 assert.ok((await eventBus.history(taskId)).some((event) => event.ask?.id === "execution-plan-approval"));
 assert.ok(db.listArtifacts(taskId).some((artifact) => artifact.label === "Agent 执行计划"));
+assert.ok(db.listArtifacts(taskId).some((artifact) => artifact.label === "Agent 多轮分析轨迹"));
+assert.ok((await eventBus.history(taskId)).filter((event) => event.tool === "agent_planning_loop" && event.type === "tool_completed").length >= 4);
 
 db.addMessage({
   id: randomUUID(),
@@ -129,6 +133,8 @@ db.addMessage({
 await runner.run(mockTaskId);
 assert.equal(db.getTask(mockTaskId)?.status, "waiting_user");
 assert.ok((await eventBus.history(mockTaskId)).some((event) => event.ask?.id === "execution-plan-approval"));
+assert.ok(db.listArtifacts(mockTaskId).some((artifact) => artifact.label === "Agent 多轮分析轨迹"));
+assert.ok((await eventBus.history(mockTaskId)).some((event) => event.tool === "agent_planning_loop" && event.type === "tool_completed"));
 db.addMessage({
   id: randomUUID(),
   taskId: mockTaskId,

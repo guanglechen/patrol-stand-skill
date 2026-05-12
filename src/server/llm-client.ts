@@ -12,6 +12,17 @@ export interface LlmResult {
   casePath: string;
 }
 
+export interface PlanningTraceResult {
+  provider: "kimi-coding" | "mock" | "none";
+  model: string;
+  tracePath: string;
+  summary: string;
+  rounds: Array<{
+    label: string;
+    path: string;
+  }>;
+}
+
 interface SourceDigest {
   material_count: number;
   materials: Array<{
@@ -50,6 +61,95 @@ const workbookSchema = {
 
 export function hasLlmConfig(): boolean {
   return Boolean(process.env.OPENAI_API_KEY || process.env.KIMI_API_KEY || process.env.LLM_PROVIDER === "mock");
+}
+
+export async function generatePlanningTraceWithLlm(taskId: string, manifest: TaskManifest): Promise<PlanningTraceResult> {
+  const workspace = taskWorkspaceDir(taskId);
+  const digest = await readDigest(taskId);
+  await fs.mkdir(workspace, { recursive: true });
+
+  if (!process.env.KIMI_API_KEY || (process.env.LLM_PROVIDER && process.env.LLM_PROVIDER !== "kimi")) {
+    return generateMockPlanningTrace(taskId, manifest, digest, process.env.LLM_PROVIDER === "mock" ? "mock" : "none");
+  }
+
+  const model = process.env.KIMI_MODEL ?? "kimi-for-coding";
+  const baseInput = buildPlanningInput(manifest, digest);
+  const roundSpecs = [
+    {
+      label: "材料证据扫描",
+      file: "agent-planning-round-1-evidence.md",
+      prompt: [
+        "你是巡检标准 Agent 的材料检索与证据扫描子步骤。",
+        "只基于输入材料，输出简洁 Markdown。",
+        "请列出：1. 已读取材料；2. 明确证据；3. 弱证据；4. 需要追问的问题。",
+        baseInput
+      ].join("\n\n")
+    },
+    {
+      label: "职责边界假设",
+      file: "agent-planning-round-2-boundary.md",
+      prompt: [
+        "你是巡检标准 Agent 的职责/专业边界分析子步骤。",
+        "只基于输入材料，输出简洁 Markdown。",
+        "请给出候选职责边界、对象类型骨架、不能确认的边界，不要直接生成巡检项。",
+        baseInput
+      ].join("\n\n")
+    },
+    {
+      label: "执行计划合成",
+      file: "agent-planning-round-3-plan.md",
+      prompt: [
+        "你是巡检标准 Agent 的执行计划合成子步骤。",
+        "只基于输入材料，输出可给用户确认的简洁 Markdown。",
+        "计划必须说明：分析顺序、是否需要 ask、生成哪些产物、哪些内容保持 needs_review。",
+        baseInput
+      ].join("\n\n")
+    }
+  ];
+
+  const rounds: PlanningTraceResult["rounds"] = [];
+  const roundOutputs: string[] = [];
+  for (const [index, spec] of roundSpecs.entries()) {
+    const promptPath = path.join(workspace, `agent-planning-round-${index + 1}-prompt.md`);
+    await fs.writeFile(promptPath, spec.prompt, "utf8");
+    const { stdout, stderr } = await runPiCli(
+      [
+        "--provider",
+        "kimi-coding",
+        "--model",
+        model,
+        "--thinking",
+        process.env.KIMI_THINKING ?? "off",
+        "--no-session",
+        "--no-tools",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--system-prompt",
+        "你是巡检标准分析 Agent 的一个中间分析步骤。不要生成最终 Excel，只输出当前步骤结论。",
+        "--print",
+        `@${promptPath}`
+      ],
+      {
+        cwd: workspace,
+        env: process.env,
+        timeout: Number(process.env.KIMI_PLANNING_TIMEOUT_MS ?? 90_000),
+        maxBuffer: 10 * 1024 * 1024
+      }
+    );
+    const output = (stdout || stderr).trim();
+    const outputPath = path.join(workspace, spec.file);
+    await fs.writeFile(outputPath, output, "utf8");
+    rounds.push({ label: spec.label, path: outputPath });
+    roundOutputs.push(`## ${spec.label}\n\n${output}`);
+  }
+
+  const tracePath = path.join(workspace, "agent-planning-trace.md");
+  const summary = roundOutputs.join("\n\n");
+  await fs.writeFile(tracePath, summary, "utf8");
+  return { provider: "kimi-coding", model, tracePath, summary, rounds };
 }
 
 export async function generateWorkbookCaseWithLlm(taskId: string, manifest: TaskManifest): Promise<LlmResult> {
@@ -224,6 +324,77 @@ function buildCompactKimiPrompt(manifest: TaskManifest, digest: SourceDigest): s
     `附件数量：${manifest.files.length}`,
     `材料：${userMaterials || buildInput(manifest, digest)}`
   ].join("\n");
+}
+
+function buildPlanningInput(manifest: TaskManifest, digest: SourceDigest): string {
+  return JSON.stringify(
+    {
+      task: {
+        id: manifest.task.id,
+        title: manifest.task.title,
+        status: manifest.task.status
+      },
+      files: manifest.files.map((file) => ({
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.size
+      })),
+      user_messages: manifest.messages
+        .filter((message) => message.role === "user" && !message.askId)
+        .map((message) => message.content),
+      source_digest: digest
+    },
+    null,
+    2
+  );
+}
+
+async function generateMockPlanningTrace(
+  taskId: string,
+  manifest: TaskManifest,
+  digest: SourceDigest,
+  provider: "mock" | "none"
+): Promise<PlanningTraceResult> {
+  const workspace = taskWorkspaceDir(taskId);
+  const source = digest.materials.map((material) => material.text_preview).join("；").slice(0, 800);
+  const sections = [
+    {
+      label: "材料证据扫描",
+      text: [
+        `已读取 ${digest.material_count} 份材料，附件 ${manifest.files.length} 个。`,
+        `责任信号：${digest.signals.responsibility.join("、") || "待确认"}`,
+        `对象信号：${digest.signals.objects.join("、") || "待确认"}`,
+        `标准信号：${digest.signals.standards.join("、") || "待确认"}`
+      ].join("\n")
+    },
+    {
+      label: "职责边界假设",
+      text: [
+        "先按职责/专业覆盖边界形成候选 L1，不直接铺开巡检项。",
+        `当前证据摘要：${source || "无可用摘要"}`,
+        "证据不足的职责、对象和频次保持 needs_review。"
+      ].join("\n")
+    },
+    {
+      label: "执行计划合成",
+      text: [
+        "执行顺序：材料复核 -> 职责边界 -> 对象骨架 -> LLM 抽取 -> Excel 渲染 -> 校验。",
+        "如用户不批准计划，不进入 Excel 生成。"
+      ].join("\n")
+    }
+  ];
+  const rounds: PlanningTraceResult["rounds"] = [];
+  const body: string[] = [];
+  for (const [index, section] of sections.entries()) {
+    const roundPath = path.join(workspace, `agent-planning-round-${index + 1}-mock.md`);
+    await fs.writeFile(roundPath, section.text, "utf8");
+    rounds.push({ label: section.label, path: roundPath });
+    body.push(`## ${section.label}\n\n${section.text}`);
+  }
+  const tracePath = path.join(workspace, "agent-planning-trace.md");
+  const summary = body.join("\n\n");
+  await fs.writeFile(tracePath, summary, "utf8");
+  return { provider, model: provider, tracePath, summary, rounds };
 }
 
 function isWorkbookPayload(payload: Record<string, unknown>): boolean {
