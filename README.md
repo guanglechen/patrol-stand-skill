@@ -7,6 +7,7 @@
 - Pi 原生适配：`package.json` 中声明 Pi `skills`、`extensions`、`prompts`。
 - 沙箱执行：runner 优先使用 Docker per-task container；`SANDBOX_MODE=host` 可用于本地调试。
 - Excel 输出：复用 `scripts/render_workbook.py` 和 `scripts/validate_workbook.py`，最终产物为 `.xlsx`。
+- LLM 分析：材料解析后进入 `llm_analysis` 阶段；配置 `OPENAI_API_KEY` 后会调用 OpenAI Responses API 生成工作簿结构 JSON。
 
 ## Local Run
 
@@ -62,7 +63,19 @@ Pi package manifest 在根 `package.json` 的 `pi` 字段中：
 默认使用本地 fallback runner，便于无模型密钥时验证 Web、ask、沙箱和 Excel 闭环：
 
 ```bash
-PATROL_RUNNER=local npm start
+PATROL_RUNNER=local OPENAI_API_KEY=... npm start
+```
+
+未配置模型 key 时，本地 runner 会明确记录 `llm_analysis` 降级事件，并使用规则骨架继续生成 Excel。若希望无 LLM 时直接失败：
+
+```bash
+LLM_REQUIRED=true PATROL_RUNNER=local npm start
+```
+
+验证 LLM 接入链路但不调用真实模型：
+
+```bash
+LLM_PROVIDER=mock npm run smoke
 ```
 
 启用 Pi runner：

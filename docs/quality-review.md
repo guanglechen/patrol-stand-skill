@@ -29,6 +29,7 @@
 ## 仍需后续增强
 
 - 使用真实 provider key 跑一次 `PATROL_RUNNER=pi` 端到端分析。
+- 使用真实 `OPENAI_API_KEY` 跑一次本地 runner 的 `llm_analysis` 端到端分析。
 - 引入更强的 PDF 解析和 OCR 策略。
 - 将 fallback runner 逐步退化为 smoke/demo，真实分析默认走 Pi runner。
 - 加入 artifact 清理、任务超时、运行日志脱敏和生产资源配额。

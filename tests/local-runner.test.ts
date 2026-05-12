@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patrol-runner-"));
 process.env.DATA_DIR = tempDir;
 process.env.SANDBOX_MODE = "host";
+delete process.env.LLM_PROVIDER;
 
 const { AppDatabase } = await import("../src/server/db.js");
 const { LocalPatrolRunner } = await import("../src/server/local-runner.js");
@@ -52,6 +53,7 @@ const artifacts = db.listArtifacts(taskId);
 assert.equal(db.getTask(taskId)?.status, "completed");
 assert.ok(artifacts.some((artifact) => artifact.kind === "workbook"));
 assert.ok(artifacts.some((artifact) => artifact.kind === "validation"));
+assert.ok((await eventBus.history(taskId)).some((event) => event.tool === "llm_analysis" && event.type === "tool_failed"));
 
 const uploadTaskId = randomUUID();
 db.createTask({
@@ -81,5 +83,37 @@ db.addMessage({
 });
 await runner.run(uploadTaskId);
 assert.equal(db.getTask(uploadTaskId)?.status, "waiting_user");
+
+process.env.LLM_PROVIDER = "mock";
+const mockTaskId = randomUUID();
+db.createTask({
+  id: mockTaskId,
+  title: "mock llm branch test",
+  status: "draft",
+  createdAt: now,
+  updatedAt: now,
+  waitingAskId: null
+});
+db.addMessage({
+  id: randomUUID(),
+  taskId: mockTaskId,
+  role: "user",
+  content: "消防部门负责灭火器、消防泵、通道占用巡检，标准要求异常闭环和留痕。",
+  createdAt: now,
+  askId: null
+});
+await runner.run(mockTaskId);
+db.addMessage({
+  id: randomUUID(),
+  taskId: mockTaskId,
+  role: "user",
+  content: "candidate_boundary",
+  askId: "boundary-confirmation",
+  createdAt: new Date().toISOString()
+});
+await runner.run(mockTaskId);
+assert.equal(db.getTask(mockTaskId)?.status, "completed");
+assert.ok(db.listArtifacts(mockTaskId).some((artifact) => artifact.label === "LLM 工作簿结构 JSON"));
+assert.ok((await eventBus.history(mockTaskId)).some((event) => event.tool === "llm_analysis" && event.type === "tool_completed"));
 
 await fs.rm(tempDir, { recursive: true, force: true });

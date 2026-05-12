@@ -8,6 +8,7 @@ import { writeManifest } from "./manifest.js";
 import { repoRoot, taskOutputsDir, taskWorkspaceDir } from "./paths.js";
 import { Sandbox } from "./sandbox.js";
 import type { AgentAsk, TaskArtifact, TaskManifest } from "./types.js";
+import { generateWorkbookCaseWithLlm, hasLlmConfig } from "./llm-client.js";
 
 const BOUNDARY_ASK_ID = "boundary-confirmation";
 
@@ -56,7 +57,7 @@ export class LocalPatrolRunner {
       return;
     }
     await this.stage(taskId, "boundary_design", "职责边界与对象层级设计", async () => {
-      await this.tool(taskId, "inspection-standard-hierarchy-consultant", "Built a defensible L0-L2 skeleton with review markers.");
+      await this.runLlmAnalysis(taskId, manifest);
     });
     await this.stage(taskId, "workbook_build", "Excel 工作簿生成", async () => {
       await this.buildWorkbook(taskId, manifest);
@@ -184,7 +185,7 @@ export class LocalPatrolRunner {
     const casePath = path.join(workspace, "inspection-case.json");
     const workbookPath = path.join(outputs, "inspection-standard-workbook.xlsx");
     const validationPath = path.join(outputs, "validation.txt");
-    const payload = this.buildWorkbookPayload(manifest);
+    const payload = await this.loadWorkbookPayload(taskId, manifest);
     await fs.writeFile(casePath, JSON.stringify(payload, null, 2), "utf8");
 
     const sandbox = new Sandbox(taskId);
@@ -360,6 +361,61 @@ export class LocalPatrolRunner {
         }
       ]
     };
+  }
+
+  private async runLlmAnalysis(taskId: string, manifest: TaskManifest): Promise<void> {
+    await eventBus.emitTaskEvent({ taskId, type: "tool_started", tool: "llm_analysis", message: "llm_analysis started", level: "info" });
+    if (!hasLlmConfig()) {
+      const message = "No LLM provider configured. Set OPENAI_API_KEY for real analysis or LLM_PROVIDER=mock for chain testing.";
+      await eventBus.emitTaskEvent({ taskId, type: "tool_failed", tool: "llm_analysis", message, level: "warning" });
+      if (process.env.LLM_REQUIRED === "true") {
+        throw new Error(message);
+      }
+      await eventBus.emitTaskEvent({
+        taskId,
+        type: "tool_completed",
+        tool: "inspection-standard-hierarchy-consultant",
+        message: "Falling back to deterministic workbook skeleton because LLM is unavailable.",
+        level: "warning"
+      });
+      return;
+    }
+
+    try {
+      const result = await generateWorkbookCaseWithLlm(taskId, manifest);
+      await eventBus.emitTaskEvent({
+        taskId,
+        type: "tool_completed",
+        tool: "llm_analysis",
+        message: `LLM generated workbook case via ${result.provider}/${result.model}.`,
+        level: "success",
+        data: { casePath: result.casePath, rawPath: result.rawPath }
+      });
+      await this.registerArtifact(taskId, "LLM 分析原始响应", "trace", result.rawPath);
+      await this.registerArtifact(taskId, "LLM 工作簿结构 JSON", "trace", result.casePath);
+    } catch (error) {
+      const message = (error as Error).message;
+      await eventBus.emitTaskEvent({ taskId, type: "tool_failed", tool: "llm_analysis", message, level: "error" });
+      if (process.env.LLM_REQUIRED === "true") {
+        throw error;
+      }
+      await eventBus.emitTaskEvent({
+        taskId,
+        type: "tool_completed",
+        tool: "inspection-standard-hierarchy-consultant",
+        message: "LLM failed; falling back to deterministic workbook skeleton.",
+        level: "warning"
+      });
+    }
+  }
+
+  private async loadWorkbookPayload(taskId: string, manifest: TaskManifest): Promise<Record<string, unknown>> {
+    const llmCasePath = path.join(taskWorkspaceDir(taskId), "llm-case.json");
+    try {
+      return JSON.parse(await fs.readFile(llmCasePath, "utf8")) as Record<string, unknown>;
+    } catch {
+      return this.buildWorkbookPayload(manifest);
+    }
   }
 
   private async registerArtifact(taskId: string, label: string, kind: TaskArtifact["kind"], artifactPath: string): Promise<void> {
