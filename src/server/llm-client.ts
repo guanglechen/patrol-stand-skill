@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { taskWorkspaceDir } from "./paths.js";
 import type { TaskManifest } from "./types.js";
 
 export interface LlmResult {
-  provider: "openai" | "mock";
+  provider: "openai" | "kimi-coding" | "mock";
   model: string;
   payload: Record<string, unknown>;
   rawPath: string;
@@ -48,10 +49,13 @@ const workbookSchema = {
 };
 
 export function hasLlmConfig(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY || process.env.LLM_PROVIDER === "mock");
+  return Boolean(process.env.OPENAI_API_KEY || process.env.KIMI_API_KEY || process.env.LLM_PROVIDER === "mock");
 }
 
 export async function generateWorkbookCaseWithLlm(taskId: string, manifest: TaskManifest): Promise<LlmResult> {
+  if (process.env.KIMI_API_KEY && (process.env.LLM_PROVIDER === "kimi" || !process.env.OPENAI_API_KEY)) {
+    return generateKimiCodingResult(taskId, manifest);
+  }
   const provider = process.env.LLM_PROVIDER === "mock" ? "mock" : "openai";
   if (provider === "mock") return generateMockResult(taskId, manifest);
   const apiKey = process.env.OPENAI_API_KEY;
@@ -96,6 +100,289 @@ export async function generateWorkbookCaseWithLlm(taskId: string, manifest: Task
   await fs.writeFile(rawPath, JSON.stringify(raw, null, 2), "utf8");
   await fs.writeFile(casePath, JSON.stringify(payload, null, 2), "utf8");
   return { provider: "openai", model, payload, rawPath, casePath };
+}
+
+async function generateKimiCodingResult(taskId: string, manifest: TaskManifest): Promise<LlmResult> {
+  const workspace = taskWorkspaceDir(taskId);
+  const digest = await readDigest(taskId);
+  const model = process.env.KIMI_MODEL ?? "kimi-for-coding";
+  const promptPath = path.join(workspace, "llm-prompt.md");
+  const prompt = buildCompactKimiPrompt(manifest, digest);
+  await fs.writeFile(promptPath, prompt, "utf8");
+  const args = [
+    "--provider",
+    "kimi-coding",
+    "--model",
+    model,
+    "--thinking",
+    process.env.KIMI_THINKING ?? "off",
+    "--no-session",
+    "--no-tools",
+    "--no-context-files",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--system-prompt",
+    "你是巡检标准分析器。只输出紧凑 JSON，不输出解释或 Markdown。",
+    "--print",
+    `@${promptPath}`
+  ];
+  const { stdout, stderr } = await runPiCli(args, {
+    cwd: workspace,
+    env: process.env,
+    timeout: Number(process.env.KIMI_RUNNER_TIMEOUT_MS ?? 180_000),
+    maxBuffer: 20 * 1024 * 1024
+  });
+  const compactPayload = JSON.parse(extractJson(stdout || stderr)) as Record<string, unknown>;
+  const payload = isWorkbookPayload(compactPayload)
+    ? compactPayload
+    : compactAnalysisToWorkbookPayload(compactPayload, manifest, digest);
+  const rawPath = path.join(workspace, "llm-analysis.json");
+  const casePath = path.join(workspace, "llm-case.json");
+  await fs.writeFile(
+    rawPath,
+    JSON.stringify({ provider: "kimi-coding", model, promptPath, compactPayload, stdout, stderr }, null, 2),
+    "utf8"
+  );
+  await fs.writeFile(casePath, JSON.stringify(payload, null, 2), "utf8");
+  return { provider: "kimi-coding", model, payload, rawPath, casePath };
+}
+
+function runPiCli(
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number }
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("npx", ["pi", ...args], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    child.stdin.end();
+
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutSize = 0;
+    let stderrSize = 0;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, options.timeout);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutSize += chunk.length;
+      if (stdoutSize > options.maxBuffer) {
+        child.kill("SIGTERM");
+        reject(new Error("Pi CLI stdout exceeded maxBuffer."));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrSize += chunk.length;
+      if (stderrSize > options.maxBuffer) {
+        child.kill("SIGTERM");
+        reject(new Error("Pi CLI stderr exceeded maxBuffer."));
+        return;
+      }
+      stderr.push(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      const out = Buffer.concat(stdout).toString("utf8");
+      const err = Buffer.concat(stderr).toString("utf8");
+      if (code === 0) {
+        resolve({ stdout: out, stderr: err });
+        return;
+      }
+      const reason = timedOut ? `timed out after ${options.timeout}ms` : `exited with code ${code ?? "null"}`;
+      reject(new Error(`Pi CLI ${reason}${signal ? ` (${signal})` : ""}.\nstdout:\n${out}\nstderr:\n${err}`));
+    });
+  });
+}
+
+function buildCompactKimiPrompt(manifest: TaskManifest, digest: SourceDigest): string {
+  const userMaterials = digest.materials
+    .filter((material) => material.status === "extracted")
+    .map((material) => material.text_preview)
+    .join("\n")
+    .slice(0, 4000);
+  return [
+    "从材料抽取巡检标准分析信号，只输出 JSON。",
+    "字段固定为 departments, object_types, inspection_items, risks, frequency, assumptions, clarification_questions。",
+    "每个数组最多 6 项，数组元素必须是短中文短语。",
+    "优先识别职责/专业覆盖边界，其次识别对象类型，最后识别标准项。",
+    "证据不足的内容放入 assumptions 或 clarification_questions。",
+    "",
+    `任务标题：${manifest.task.title}`,
+    `附件数量：${manifest.files.length}`,
+    `材料：${userMaterials || buildInput(manifest, digest)}`
+  ].join("\n");
+}
+
+function isWorkbookPayload(payload: Record<string, unknown>): boolean {
+  return [
+    "hierarchy_rows",
+    "organization_rows",
+    "coverage_rows",
+    "clarification_rows",
+    "reference_rows",
+    "standard_rows"
+  ].every((key) => Array.isArray(payload[key]));
+}
+
+function compactAnalysisToWorkbookPayload(
+  compact: Record<string, unknown>,
+  manifest: TaskManifest,
+  digest: SourceDigest
+): Record<string, unknown> {
+  const departments = toTextArray(compact.departments).slice(0, 6);
+  const objects = toTextArray(compact.object_types).slice(0, 8);
+  const items = toTextArray(compact.inspection_items).slice(0, 12);
+  const risks = toTextArray(compact.risks).slice(0, 8);
+  const frequency = toTextArray(compact.frequency).slice(0, 4);
+  const assumptions = toTextArray(compact.assumptions).slice(0, 8);
+  const questions = toTextArray(compact.clarification_questions).slice(0, 8);
+
+  const source = [
+    `Kimi 分析：${JSON.stringify(compact)}`,
+    digest.materials.map((material) => material.text_preview).join("；")
+  ]
+    .filter(Boolean)
+    .join("；")
+    .slice(0, 1200);
+  const primaryDepartment = departments[0] ?? digest.signals.responsibility[0] ?? "待确认责任部门";
+  const primaryObject = objects[0] ?? digest.signals.objects[0] ?? "待确认对象";
+  const primaryFrequency = frequency[0] ?? "待确认";
+  const objectRows = objects.length ? objects : [primaryObject];
+  const riskSummary = risks.join("、") || "异常未识别或未闭环";
+
+  return {
+    hierarchy_rows: [
+      {
+        "层级": "L0",
+        "父节点": "",
+        "节点名称": manifest.task.title || "Kimi巡检标准分析任务",
+        "节点代号": "KIMI",
+        "节点类型": "行业/场景包",
+        "覆盖对象": objectRows.join("、"),
+        "设计理由": "由 Kimi 先抽取职责、对象、风险和频次信号，再按固定工作簿契约展开",
+        "纳入边界": departments.length ? departments.join("、") : "用户材料中可识别的职责边界",
+        "排除边界": "未提供证据的专项检测、工程改造和第三方责任",
+        "责任专业": departments.join("、") || primaryDepartment,
+        "参考依据": source,
+        "确认状态": "needs_review"
+      },
+      ...departments.map((department, index) => ({
+        "层级": "L1",
+        "父节点": manifest.task.title || "Kimi巡检标准分析任务",
+        "节点名称": department,
+        "节点代号": `L1-${index + 1}`,
+        "节点类型": "职责/专业覆盖边界",
+        "覆盖对象": objectRows.join("、"),
+        "设计理由": "Kimi 从材料中识别出的责任主体",
+        "纳入边界": "日常巡检、异常记录、整改和审核闭环",
+        "排除边界": "未在材料中明确归口的专业事项",
+        "责任专业": department,
+        "参考依据": source,
+        "确认状态": "needs_review"
+      })),
+      ...objectRows.map((objectName, index) => ({
+        "层级": "L2",
+        "父节点": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+        "节点名称": objectName,
+        "节点代号": `L2-${index + 1}`,
+        "节点类型": "对象类型骨架",
+        "覆盖对象": objectName,
+        "设计理由": "Kimi 从材料中识别出的巡检对象类型",
+        "纳入边界": matchingItems(items, objectName).join("、") || "状态、环境、告警和闭环检查",
+        "排除边界": "深度检修、专项试验和设计变更",
+        "责任专业": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+        "参考依据": source,
+        "确认状态": "needs_review"
+      }))
+    ],
+    organization_rows: (departments.length ? departments : [primaryDepartment]).map((department, index) => ({
+      "部门/角色": department,
+      "职责边界": `负责${objectRows.filter((_, objectIndex) => objectIndex % Math.max(departments.length, 1) === index).join("、") || primaryObject}的日常巡检、异常记录和闭环跟踪`,
+      "对应一级分类": department,
+      "对应二级类别": objectRows.join("、"),
+      "巡检责任": "执行巡检并记录结果",
+      "整改责任": "对异常发起整改或移交",
+      "审核责任": "复核整改闭环和记录完整性",
+      "来源": source
+    })),
+    coverage_rows: objectRows.map((objectName, index) => ({
+      "业务域": "巡检标准",
+      "专业": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "对象域": objectName,
+      "风险场景": risks[index % Math.max(risks.length, 1)] ?? riskSummary,
+      "对应L1": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "对应L2": objectName,
+      "覆盖状态": "候选覆盖",
+      "缺口说明": assumptions[index % Math.max(assumptions.length, 1)] ?? "需补充阈值、责任时限和验收口径"
+    })),
+    clarification_rows: (questions.length ? questions : ["请确认责任部门、频次阈值、异常分级和整改时限。"]).map((question) => ({
+      "问题类型": "待确认项",
+      "问题描述": question,
+      "影响层级": "L1/L2/标准清单",
+      "当前假设": assumptions.join("；") || "按材料候选边界先生成 needs_review 版本",
+      "需要用户补充": question,
+      "优先级": "高",
+      "状态": "open"
+    })),
+    reference_rows: [
+      {
+        "标准编号": "KIMI-SOURCE",
+        "标准名称": "Kimi For Coding 巡检标准分析结果",
+        "关联系统": "本地 Pi 巡检标准 Agent",
+        "关联系统/对象": manifest.task.id,
+        "来源URL": "",
+        "说明": source
+      }
+    ],
+    standard_rows: objectRows.map((objectName, index) => ({
+      "一级分类": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "系统属性": "产业园",
+      "适用设备类别": objectName,
+      "适用代号": `OBJ-${index + 1}`,
+      "巡检对象类型": objectName,
+      "类别代号": `KIMI-${index + 1}`,
+      "一级系统": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "二级部位组": objectName,
+      "三级关键部件/典型部位": objectName,
+      "部件介绍描述": `由 Kimi 从材料中识别的巡检对象：${objectName}`,
+      "四级巡检项-典型巡检项（看什么/查什么）": matchingItems(items, objectName).join("；") || items[index % Math.max(items.length, 1)] || "检查状态、环境、告警和闭环记录",
+      "巡检维度": "状态/安全/闭环",
+      "巡检方式": "现场观察/系统核查/记录复核",
+      "巡检依据（标准）": "用户上传材料 + Kimi 分析",
+      "参考章节（编号）": "待确认",
+      "推荐巡检频次（建议）": primaryFrequency,
+      "点位等级（1-3，1最高）": index < 2 ? "1" : "2",
+      "巡检执行部门": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "整改部门": departments[index % Math.max(departments.length, 1)] ?? primaryDepartment,
+      "所属区域": "产业园",
+      "确认状态": "needs_review"
+    }))
+  };
+}
+
+function toTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
+}
+
+function matchingItems(items: string[], objectName: string): string[] {
+  const matched = items.filter((item) => item.includes(objectName) || objectName.includes(item));
+  return matched.length ? matched : items.slice(0, 3);
 }
 
 async function generateMockResult(taskId: string, manifest: TaskManifest): Promise<LlmResult> {
@@ -258,4 +545,15 @@ function extractOutputText(raw: { output?: unknown }): string {
     }
   }
   return chunks.join("");
+}
+
+function extractJson(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return trimmed;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) return fenced[1].trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
+  throw new Error("LLM output did not contain a JSON object.");
 }

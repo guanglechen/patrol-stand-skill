@@ -7,7 +7,7 @@
 - Pi 原生适配：`package.json` 中声明 Pi `skills`、`extensions`、`prompts`。
 - 沙箱执行：runner 优先使用 Docker per-task container；`SANDBOX_MODE=host` 可用于本地调试。
 - Excel 输出：复用 `scripts/render_workbook.py` 和 `scripts/validate_workbook.py`，最终产物为 `.xlsx`。
-- LLM 分析：材料解析后进入 `llm_analysis` 阶段；配置 `OPENAI_API_KEY` 后会调用 OpenAI Responses API 生成工作簿结构 JSON。
+- LLM 分析：材料解析后进入 `llm_analysis` 阶段；配置 `KIMI_API_KEY` 后会通过 Pi CLI 调用 Kimi For Coding，配置 `OPENAI_API_KEY` 后会调用 OpenAI Responses API。
 
 ## Local Run
 
@@ -63,7 +63,7 @@ Pi package manifest 在根 `package.json` 的 `pi` 字段中：
 默认使用本地 fallback runner，便于无模型密钥时验证 Web、ask、沙箱和 Excel 闭环：
 
 ```bash
-PATROL_RUNNER=local OPENAI_API_KEY=... npm start
+PATROL_RUNNER=local KIMI_API_KEY=... npm start
 ```
 
 未配置模型 key 时，本地 runner 会明确记录 `llm_analysis` 降级事件，并使用规则骨架继续生成 Excel。若希望无 LLM 时直接失败：
@@ -76,6 +76,13 @@ LLM_REQUIRED=true PATROL_RUNNER=local npm start
 
 ```bash
 LLM_PROVIDER=mock npm run smoke
+```
+
+Kimi For Coding 验证：
+
+```bash
+KIMI_API_KEY=... npx pi --provider kimi-coding --model kimi-for-coding --no-session --no-tools -p "请只输出 OK"
+KIMI_API_KEY=... PATROL_RUNNER=local LLM_REQUIRED=true npm start
 ```
 
 启用 Pi runner：
