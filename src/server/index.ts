@@ -222,6 +222,10 @@ app.post("/api/internal/tasks/:taskId/artifacts", async (request, reply) => {
     return reply.code(400).send({ error: (error as Error).message });
   }
   const stat = await fsp.stat(artifactPath);
+  const existing = db
+    .listArtifacts(taskId)
+    .find((artifact) => artifact.label === body.label && artifact.path === artifactPath);
+  if (existing) return existing;
   const artifact: TaskArtifact = {
     id: randomUUID(),
     taskId,

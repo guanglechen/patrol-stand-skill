@@ -110,6 +110,10 @@ export class PiPatrolRunner {
 
   private async registerArtifact(taskId: string, label: string, kind: TaskArtifact["kind"], artifactPath: string): Promise<void> {
     const stat = await fs.stat(artifactPath);
+    const existing = this.db
+      .listArtifacts(taskId)
+      .find((artifact) => artifact.label === label && artifact.path === artifactPath);
+    if (existing) return;
     const artifact: TaskArtifact = {
       id: randomUUID(),
       taskId,

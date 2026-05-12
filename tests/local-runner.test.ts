@@ -53,6 +53,7 @@ const artifacts = db.listArtifacts(taskId);
 assert.equal(db.getTask(taskId)?.status, "completed");
 assert.ok(artifacts.some((artifact) => artifact.kind === "workbook"));
 assert.ok(artifacts.some((artifact) => artifact.kind === "validation"));
+assert.equal(artifacts.filter((artifact) => artifact.label === "材料解析摘要").length, 1);
 assert.ok((await eventBus.history(taskId)).some((event) => event.tool === "llm_analysis" && event.type === "tool_failed"));
 
 const uploadTaskId = randomUUID();
