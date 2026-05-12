@@ -1,6 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Bot, CheckCircle2, FileSpreadsheet, Play, Send, UploadCloud } from "lucide-react";
+import {
+  Activity,
+  AlertCircle,
+  Bot,
+  CheckCircle2,
+  ChevronRight,
+  CircleDot,
+  FileSpreadsheet,
+  Layers3,
+  Play,
+  Send,
+  TerminalSquare,
+  UploadCloud
+} from "lucide-react";
 import "./styles.css";
 
 type TaskStatus = "draft" | "running" | "waiting_user" | "completed" | "failed";
@@ -66,6 +79,14 @@ function App() {
   const latestAsk = useMemo(() => {
     return [...events].reverse().find((event) => event.type === "agent_ask")?.ask;
   }, [events]);
+
+  const stageItems = useMemo(() => buildStageItems(events), [events]);
+  const visibleRunEvents = useMemo(() => events.filter(isNarrativeEvent).slice(-3), [events]);
+  const toolEvents = useMemo(() => events.filter(isToolEvent).slice(-6), [events]);
+  const workbookArtifact = useMemo(
+    () => details?.artifacts.find((artifact) => artifact.kind === "workbook"),
+    [details?.artifacts]
+  );
 
   useEffect(() => {
     void refreshTasks();
@@ -230,6 +251,21 @@ function App() {
               </div>
             </div>
 
+            {visibleRunEvents.length ? (
+              <div className="live-feed" aria-live="polite">
+                <div className="feed-header">
+                  <Bot size={16} />
+                  <span>Agent 最近输出</span>
+                </div>
+                {visibleRunEvents.map((event) => (
+                  <div key={event.id} className={`feed-line ${event.level ?? "info"}`}>
+                    <span>{formatEventTime(event.createdAt)}</span>
+                    <p>{displayEventMessage(event)}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
             {latestAsk && details?.task.status === "waiting_user" ? (
               <div className="ask-box">
                 <strong>{latestAsk.title}</strong>
@@ -307,18 +343,71 @@ function App() {
 
           <section className="panel event-panel">
             <div className="panel-title">
-              <Activity size={18} />
-              <span>运行详情</span>
+              <Layers3 size={18} />
+              <span>Agent 运行</span>
             </div>
-            <div className="event-stream">
-              {events.map((event) => (
-                <div key={event.id} className={`event-card ${event.level ?? "info"}`}>
-                  <time>{new Date(event.createdAt).toLocaleTimeString()}</time>
-                  <strong>{event.stage ?? event.tool ?? event.type}</strong>
-                  <span>{event.message}</span>
-                </div>
-              ))}
+            <div className="run-summary">
+              <div>
+                <small>当前状态</small>
+                <strong>{details ? statusLabel(details.task.status) : "未选择任务"}</strong>
+              </div>
+              <div>
+                <small>事件</small>
+                <strong>{events.length}</strong>
+              </div>
+              <div>
+                <small>产物</small>
+                <strong>{details?.artifacts.length ?? 0}</strong>
+              </div>
             </div>
+
+            <div className="stage-timeline">
+              {stageItems.length ? (
+                stageItems.map((item) => (
+                  <div key={item.key} className={`stage-item ${item.status}`}>
+                    <span className="stage-marker">{stageIcon(item.status)}</span>
+                    <div>
+                      <strong>{item.label}</strong>
+                      <small>{item.message}</small>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state">任务启动后会显示阶段轨迹。</div>
+              )}
+            </div>
+
+            {workbookArtifact ? (
+              <a className="workbook-callout" href={workbookArtifact.downloadUrl}>
+                <FileSpreadsheet size={18} />
+                <span>
+                  <strong>巡检标准工作簿已生成</strong>
+                  <small>{formatBytes(workbookArtifact.size)}</small>
+                </span>
+                <ChevronRight size={16} />
+              </a>
+            ) : null}
+
+            <details className="tool-drawer">
+              <summary>
+                <TerminalSquare size={16} />
+                <span>底层工具与沙箱命令</span>
+                <small>{events.filter(isToolEvent).length} 条</small>
+              </summary>
+              <div className="tool-list">
+                {toolEvents.length ? (
+                  toolEvents.map((event) => (
+                    <div key={event.id} className={`tool-line ${event.level ?? "info"}`}>
+                      <time>{formatEventTime(event.createdAt)}</time>
+                      <code>{event.tool ?? event.type}</code>
+                      <span>{compactToolMessage(event.message)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="empty-state">暂无工具调用。</div>
+                )}
+              </div>
+            </details>
           </section>
 
           <section className="panel artifacts">
@@ -348,6 +437,89 @@ function statusLabel(status: TaskStatus) {
     failed: "失败"
   };
   return labels[status];
+}
+
+interface StageItem {
+  key: string;
+  label: string;
+  message: string;
+  status: "running" | "completed" | "failed" | "pending";
+}
+
+const stageOrder = ["intake", "material_parse", "boundary_design", "workbook_build"];
+const stageLabels: Record<string, string> = {
+  intake: "材料接收",
+  material_parse: "材料解析",
+  boundary_design: "职责边界与对象设计",
+  workbook_build: "Excel 工作簿生成"
+};
+
+function buildStageItems(events: TaskEvent[]): StageItem[] {
+  const seen = new Map<string, StageItem>();
+  for (const event of events) {
+    if (!event.stage) continue;
+    if (!seen.has(event.stage)) {
+      seen.set(event.stage, {
+        key: event.stage,
+        label: stageLabels[event.stage] ?? event.stage,
+        message: "等待开始",
+        status: "pending"
+      });
+    }
+    const current = seen.get(event.stage)!;
+    if (event.type === "stage_started") {
+      current.status = "running";
+      current.message = event.message;
+    }
+    if (event.type === "stage_completed") {
+      current.status = "completed";
+      current.message = event.message;
+    }
+    if (event.type === "task_failed") {
+      current.status = "failed";
+      current.message = event.message;
+    }
+  }
+  return [...seen.values()].sort((a, b) => stageOrder.indexOf(a.key) - stageOrder.indexOf(b.key));
+}
+
+function isToolEvent(event: TaskEvent) {
+  return event.type.startsWith("tool_");
+}
+
+function isNarrativeEvent(event: TaskEvent) {
+  if (isToolEvent(event)) return false;
+  return [
+    "run_started",
+    "stage_started",
+    "stage_completed",
+    "agent_ask",
+    "user_answered",
+    "artifact_ready",
+    "task_completed",
+    "task_failed"
+  ].includes(event.type);
+}
+
+function displayEventMessage(event: TaskEvent) {
+  if (event.type === "artifact_ready" && event.artifact) return `产物就绪：${event.artifact.label}`;
+  if (event.type === "agent_ask" && event.ask) return `需要确认：${event.ask.title}`;
+  return event.message;
+}
+
+function compactToolMessage(message: string) {
+  return message.replace(/\s+/g, " ").slice(0, 150);
+}
+
+function formatEventTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function stageIcon(status: StageItem["status"]) {
+  if (status === "completed") return <CheckCircle2 size={15} />;
+  if (status === "failed") return <AlertCircle size={15} />;
+  if (status === "running") return <Activity size={15} />;
+  return <CircleDot size={15} />;
 }
 
 function formatBytes(size: number) {
