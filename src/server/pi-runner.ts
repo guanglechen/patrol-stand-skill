@@ -111,7 +111,7 @@ export class PiAgentRunner {
 
     try {
       const { stdout, stderr } = await execFileAsync("npx", ["pi", ...args], {
-        cwd: workspace,
+        cwd: repoRoot,
         env,
         timeout: Number(process.env.PI_RUNNER_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
         maxBuffer: 20 * 1024 * 1024

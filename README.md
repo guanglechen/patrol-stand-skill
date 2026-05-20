@@ -105,6 +105,17 @@ Pi runner 会通过 `npx pi` 加载：
 - `--skill pi/skills/excel-workbook-quality`
 - `--append-system-prompt pi/prompts/patrol-agent.md`
 
+当前项目 Pi 内核版本锁定在 `@earendil-works/pi-coding-agent@0.75.4`。Pi runner 会从仓库根目录启动 `npx pi` 以发现项目级 `.pi/settings.json`，但任务文件、终端命令和 artifact 仍由 bridge 限定在 task workspace / skill sandbox 内。项目级 `.pi/settings.json` 安装了 `pi-subagents`，但禁用了第三方 builtin subagents，只开放本项目定义的 `patrol-*` agent team：
+
+- `patrol-runtime-agent`
+- `patrol-tooling-agent`
+- `patrol-harness-agent`
+- `patrol-security-agent`
+- `patrol-domain-qa-agent`
+
+这些子代理只允许调用本项目 bridge 工具，不开放 Pi 内置 `bash/read/edit/write`。市场包选型记录见 `docs/pi-package-selection-2026-05-21.md`。
+如果本地 `.pi/npm/node_modules` 不存在，执行 `npm install --prefix .pi/npm` 或重新执行 `npx pi install npm:pi-subagents -l` 恢复项目级 package 缓存。
+
 bridge extension 给 Pi agent 暴露通用工具：
 
 - `read_task_manifest`
