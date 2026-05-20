@@ -194,7 +194,8 @@ export async function generateWorkbookCaseWithLlm(taskId: string, manifest: Task
   const raw = (await response.json()) as { output_text?: string; output?: unknown };
   const outputText = raw.output_text ?? extractOutputText(raw);
   if (!outputText) throw new Error("OpenAI response did not include output_text.");
-  const payload = JSON.parse(outputText) as Record<string, unknown>;
+  const parsed = JSON.parse(outputText) as Record<string, unknown>;
+  const payload = normalizeWorkbookPayload(parsed, manifest, digest);
   const rawPath = path.join(workspace, "llm-analysis.json");
   const casePath = path.join(workspace, "llm-case.json");
   await fs.writeFile(rawPath, JSON.stringify(raw, null, 2), "utf8");
@@ -235,9 +236,13 @@ async function generateKimiCodingResult(taskId: string, manifest: TaskManifest):
     maxBuffer: 20 * 1024 * 1024
   });
   const compactPayload = JSON.parse(extractJson(stdout || stderr)) as Record<string, unknown>;
-  const payload = isWorkbookPayload(compactPayload)
-    ? compactPayload
-    : compactAnalysisToWorkbookPayload(compactPayload, manifest, digest);
+  const payload = normalizeWorkbookPayload(
+    isWorkbookPayload(compactPayload)
+      ? compactPayload
+      : compactAnalysisToWorkbookPayload(compactPayload, manifest, digest),
+    manifest,
+    digest
+  );
   const rawPath = path.join(workspace, "llm-analysis.json");
   const casePath = path.join(workspace, "llm-case.json");
   await fs.writeFile(
@@ -406,6 +411,236 @@ function isWorkbookPayload(payload: Record<string, unknown>): boolean {
     "reference_rows",
     "standard_rows"
   ].every((key) => Array.isArray(payload[key]));
+}
+
+function normalizeWorkbookPayload(
+  payload: Record<string, unknown>,
+  manifest: TaskManifest,
+  digest: SourceDigest
+): Record<string, unknown> {
+  if (!isWorkbookPayload(payload)) {
+    return compactAnalysisToWorkbookPayload(payload, manifest, digest);
+  }
+  if (hasContractHierarchy(payload) && hasContractRows(payload.standard_rows, ["一级分类", "巡检对象类型"])) {
+    return payload;
+  }
+  return repairWorkbookPayload(payload, manifest, digest);
+}
+
+function hasContractHierarchy(payload: Record<string, unknown>): boolean {
+  const rows = toRows(payload.hierarchy_rows);
+  return rows.some((row) => textFrom(row, ["层级"]) === "L1" && textFrom(row, ["节点名称"]));
+}
+
+function hasContractRows(value: unknown, requiredKeys: string[]): boolean {
+  return toRows(value).some((row) => requiredKeys.every((key) => textFrom(row, [key])));
+}
+
+function repairWorkbookPayload(
+  payload: Record<string, unknown>,
+  manifest: TaskManifest,
+  digest: SourceDigest
+): Record<string, unknown> {
+  const hierarchyInput = toRows(payload.hierarchy_rows);
+  const organizationInput = toRows(payload.organization_rows);
+  const coverageInput = toRows(payload.coverage_rows);
+  const clarificationInput = toRows(payload.clarification_rows);
+  const referenceInput = toRows(payload.reference_rows);
+  const standardInput = toRows(payload.standard_rows);
+  const rootName = manifest.task.title || "巡检标准分析任务";
+  const source = digest.materials.map((material) => `${material.name}: ${material.text_preview}`).join("；").slice(0, 520);
+  const categories = uniqueText([
+    ...hierarchyInput.map((row) => textFrom(row, ["一级分类", "节点名称", "专业", "专业/区域"])),
+    ...standardInput.map((row) => textFrom(row, ["一级分类", "专业"])),
+    ...coverageInput.map((row) => textFrom(row, ["对应L1", "专业", "专业/区域"]))
+  ]).slice(0, 8);
+  const l1Names = categories.length ? categories : ["综合巡检"];
+
+  const hierarchyRows = [
+    {
+      "层级": "L0",
+      "父节点": "",
+      "节点名称": rootName,
+      "节点代号": "ROOT",
+      "节点类型": "行业/场景包",
+      "覆盖对象": l1Names.join("、"),
+      "设计理由": "由真实模型输出经工作簿契约归一化后形成",
+      "纳入边界": "用户材料中可识别的巡检职责、系统和对象",
+      "排除边界": "材料未提供证据的专项检测、工程改造和第三方责任",
+      "责任专业": l1Names.join("、"),
+      "参考依据": source,
+      "确认状态": "needs_review"
+    },
+    ...l1Names.map((name, index) => ({
+      "层级": "L1",
+      "父节点": rootName,
+      "节点名称": name,
+      "节点代号": `L1-${index + 1}`,
+      "节点类型": "职责/专业覆盖边界",
+      "覆盖对象": relatedCoverage(hierarchyInput, name) || name,
+      "设计理由": "模型从材料中识别出的一级专业/职责边界",
+      "纳入边界": relatedCoverage(hierarchyInput, name) || "日常巡检、异常记录和整改闭环",
+      "排除边界": "未在材料中明确的专项检测、深度检修和改造设计",
+      "责任专业": name,
+      "参考依据": relatedSource(hierarchyInput, name) || source,
+      "确认状态": "needs_review"
+    })),
+    ...normalizeL2Rows(hierarchyInput, l1Names, source)
+  ];
+
+  const organizationRows = (organizationInput.length ? organizationInput : [{ "部门/角色": "待确认责任部门" }]).map((row) => ({
+    "部门/角色": textFrom(row, ["部门/角色", "角色", "部门"]) || "待确认责任部门",
+    "职责边界": textFrom(row, ["职责边界", "职责", "责任"]) || "负责巡检执行、异常记录、整改跟踪和审核闭环",
+    "对应一级分类": textFrom(row, ["对应一级分类"]) || "全部",
+    "对应二级类别": textFrom(row, ["对应二级类别", "覆盖设备/点位", "覆盖对象"]) || "",
+    "巡检责任": textFrom(row, ["巡检责任"]) || "执行巡检并记录结果",
+    "整改责任": textFrom(row, ["整改责任"]) || "对异常发起整改或移交",
+    "审核责任": textFrom(row, ["审核责任"]) || "复核记录完整性和闭环状态",
+    "来源": textFrom(row, ["来源", "依据", "来源/备注"]) || source
+  }));
+
+  const coverageRows = l1Names.map((name, index) => {
+    const row = coverageInput[index] ?? {};
+    const l2Name = hierarchyRows.find((item) => item["层级"] === "L2" && item["父节点"] === name)?.["节点名称"] ?? "";
+    return {
+      "业务域": "巡检标准",
+      "专业": textFrom(row, ["专业", "专业/区域"]) || name,
+      "对象域": textFrom(row, ["对象域", "覆盖设备/点位"]) || relatedCoverage(hierarchyInput, name) || name,
+      "风险场景": textFrom(row, ["风险场景"]) || "异常未及时发现或未闭环",
+      "对应L1": name,
+      "对应L2": l2Name,
+      "覆盖状态": textFrom(row, ["覆盖状态", "确认状态", "状态"]) || "候选覆盖",
+      "缺口说明": textFrom(row, ["缺口说明", "计划变更", "建议动作"]) || "需补充责任边界、频次阈值和验收口径"
+    };
+  });
+
+  const clarificationRows = (clarificationInput.length ? clarificationInput : [{ "问题类型": "材料缺口" }]).map((row) => ({
+    "问题类型": textFrom(row, ["问题类型", "待确认项"]) || "待确认项",
+    "问题描述": textFrom(row, ["问题描述", "描述", "说明", "问题说明"]) || "需确认材料中未明确的边界、标准或责任",
+    "影响层级": textFrom(row, ["影响层级", "影响范围"]) || "L1/L2/标准清单",
+    "当前假设": textFrom(row, ["当前假设"]) || "按模型识别结果生成 needs_review 候选版本",
+    "需要用户补充": textFrom(row, ["需要用户补充", "建议动作", "建议确认人", "说明"]) || "补充责任部门、标准依据、频次和异常闭环口径",
+    "优先级": textFrom(row, ["优先级"]) || "高",
+    "状态": confirmationState(textFrom(row, ["状态", "确认状态"])) || "open"
+  }));
+
+  const referenceRows = (referenceInput.length ? referenceInput : [{ "标准名称": "用户上传材料" }]).map((row, index) => ({
+    "标准编号": textFrom(row, ["标准编号"]) || `SOURCE-${index + 1}`,
+    "标准名称": textFrom(row, ["标准名称", "依据名称", "依据", "来源/备注"]) || "用户上传材料",
+    "关联系统": textFrom(row, ["关联系统"]) || "本地 Pi 巡检标准 Agent",
+    "关联系统/对象": textFrom(row, ["关联系统/对象", "覆盖对象"]) || l1Names.join("、"),
+    "来源URL": textFrom(row, ["来源URL"]) || "",
+    "说明": textFrom(row, ["说明", "描述", "状态"]) || source
+  }));
+
+  const standardRows = (standardInput.length ? standardInput : l1Names.map((name) => ({ "专业": name }))).map((row, index) => {
+    const category = textFrom(row, ["一级分类", "专业"]) || l1Names[index % l1Names.length] || "综合巡检";
+    const item = textFrom(row, ["四级巡检项-典型巡检项（看什么/查什么）", "巡检项"]) || "检查运行状态、现场环境、异常告警和闭环记录";
+    return {
+      "一级分类": category,
+      "系统属性": textFrom(row, ["系统属性"]) || "商业综合体",
+      "适用设备类别": textFrom(row, ["适用设备类别", "巡检对象类型", "二级部位组", "系统"]) || category,
+      "适用代号": textFrom(row, ["适用代号"]) || `OBJ-${index + 1}`,
+      "巡检对象类型": textFrom(row, ["巡检对象类型", "适用设备类别"]) || category,
+      "类别代号": textFrom(row, ["类别代号"]) || `STD-${index + 1}`,
+      "一级系统": textFrom(row, ["一级系统", "系统"]) || category,
+      "二级部位组": textFrom(row, ["二级部位组"]) || category,
+      "三级关键部件/典型部位": textFrom(row, ["三级关键部件/典型部位"]) || textFrom(row, ["巡检项"]) || category,
+      "部件介绍描述": textFrom(row, ["部件介绍描述", "检查标准/依据", "标准要求"]) || `材料识别出的${category}巡检对象`,
+      "四级巡检项-典型巡检项（看什么/查什么）": item,
+      "巡检维度": textFrom(row, ["巡检维度"]) || "状态/安全/闭环",
+      "巡检方式": textFrom(row, ["巡检方式"]) || "现场观察/系统核查/记录复核",
+      "巡检依据（标准）": textFrom(row, ["巡检依据（标准）", "检查标准/依据", "标准要求"]) || "用户上传材料",
+      "参考章节（编号）": textFrom(row, ["参考章节（编号）"]) || "待确认",
+      "推荐巡检频次（建议）": textFrom(row, ["推荐巡检频次（建议）", "频次"]) || "待确认",
+      "点位等级（1-3，1最高）": textFrom(row, ["点位等级（1-3，1最高）"]) || "2",
+      "巡检执行部门": textFrom(row, ["巡检执行部门", "责任人"]) || "待确认责任部门",
+      "整改部门": textFrom(row, ["整改部门", "责任人"]) || "待确认责任部门",
+      "所属区域": textFrom(row, ["所属区域"]) || "商业综合体",
+      "确认状态": confirmationState(textFrom(row, ["确认状态", "状态", "status", "备注"])) || "needs_review"
+    };
+  });
+
+  return {
+    hierarchy_rows: hierarchyRows,
+    organization_rows: organizationRows,
+    coverage_rows: coverageRows,
+    clarification_rows: clarificationRows,
+    reference_rows: referenceRows,
+    standard_rows: standardRows
+  };
+}
+
+function normalizeL2Rows(rows: Record<string, unknown>[], l1Names: string[], source: string): Record<string, string>[] {
+  const output: Record<string, string>[] = [];
+  for (const [index, row] of rows.entries()) {
+    const parent = textFrom(row, ["一级分类", "父节点"]) || l1Names[index % l1Names.length] || "综合巡检";
+    const name = [textFrom(row, ["二级分类"]), textFrom(row, ["三级分类"])].filter(Boolean).join("/") ||
+      textFrom(row, ["节点名称", "覆盖设备/点位", "覆盖边界"]) ||
+      `${parent}对象`;
+    output.push({
+      "层级": "L2",
+      "父节点": parent,
+      "节点名称": name,
+      "节点代号": `L2-${index + 1}`,
+      "节点类型": "对象类型骨架",
+      "覆盖对象": textFrom(row, ["覆盖对象", "覆盖设备/点位", "覆盖边界"]) || name,
+      "设计理由": "模型从材料中识别出的二级对象/部位边界",
+      "纳入边界": textFrom(row, ["纳入边界", "覆盖边界"]) || name,
+      "排除边界": textFrom(row, ["排除边界"]) || "未提供证据的专项检测和工程改造",
+      "责任专业": parent,
+      "参考依据": textFrom(row, ["参考依据", "来源/备注", "来源"]) || source,
+      "确认状态": confirmationState(textFrom(row, ["确认状态", "状态"])) || "needs_review"
+    });
+  }
+  return output;
+}
+
+function toRows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+}
+
+function textFrom(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === null || value === undefined) continue;
+    const text = String(value).replace(/\s+/g, " ").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function uniqueText(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function relatedCoverage(rows: Record<string, unknown>[], category: string): string {
+  return rows
+    .filter((row) => textFrom(row, ["一级分类", "节点名称", "专业"]).includes(category))
+    .map((row) => textFrom(row, ["覆盖边界", "覆盖对象", "覆盖设备/点位"]))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join("、");
+}
+
+function relatedSource(rows: Record<string, unknown>[], category: string): string {
+  return rows
+    .filter((row) => textFrom(row, ["一级分类", "节点名称", "专业"]).includes(category))
+    .map((row) => textFrom(row, ["来源/备注", "来源", "参考依据"]))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join("、");
+}
+
+function confirmationState(value: string): string {
+  if (["confirmed", "seeded", "assumed", "needs_review", "sample_only"].includes(value)) return value;
+  if (value.includes("assumed")) return "assumed";
+  if (value.includes("sample_only")) return "sample_only";
+  if (value.includes("confirmed")) return "confirmed";
+  if (value.includes("seeded")) return "seeded";
+  if (value.includes("needs_review")) return "needs_review";
+  return "";
 }
 
 function compactAnalysisToWorkbookPayload(

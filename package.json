@@ -10,11 +10,13 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/src/server/index.js",
-    "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.harness.json --noEmit",
     "check:pi": "node scripts/check_pi_package.mjs",
     "check:llm-config": "node scripts/check_llm_config.mjs",
     "test": "tsx tests/session-store.test.ts && tsx tests/local-runner.test.ts",
-    "smoke": "npm run check && npm run check:pi && npm run check:llm-config && npm test"
+    "harness": "node scripts/run_harness.mjs",
+    "harness:openrouter": "node scripts/run_harness.mjs --provider openrouter",
+    "smoke": "npm run check && npm run check:pi && npm run check:llm-config && npm test && npm run harness"
   },
   "dependencies": {
     "@fastify/multipart": "^9.3.0",

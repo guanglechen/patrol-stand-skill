@@ -1,3 +1,4 @@
+import "./env.js";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -36,7 +37,7 @@ app.get("/api/health", async () => ({
   dataDir,
   repoRoot,
   sandboxMode: process.env.SANDBOX_MODE ?? "auto",
-  runnerMode: process.env.PATROL_RUNNER === "pi" ? "pi" : "local",
+  runnerMode: process.env.PI_AGENT_RUNNER === "pi" || process.env.PATROL_RUNNER === "pi" ? "pi" : "local",
   piCliAvailable: await commandExists("pi")
 }));
 

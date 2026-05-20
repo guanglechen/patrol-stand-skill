@@ -1,0 +1,35 @@
+{
+  "caseId": "pass-baseline",
+  "expectedFailures": [],
+  "events": [
+    {
+      "type": "tool_call",
+      "name": "read_task_manifest"
+    },
+    {
+      "type": "assistant_message",
+      "text": "I will use inspection-standard-hierarchy-consultant for boundary-first modeling and excel-workbook-quality for workbook validation."
+    },
+    {
+      "type": "tool_call",
+      "name": "emit_event",
+      "arguments": {
+        "type": "stage_started",
+        "stage": "boundary-modeling"
+      }
+    },
+    {
+      "type": "tool_call",
+      "name": "save_artifact",
+      "arguments": {
+        "label": "validation report",
+        "kind": "validation",
+        "relativePath": "outputs/validation.json"
+      }
+    },
+    {
+      "type": "status",
+      "status": "completed"
+    }
+  ]
+}

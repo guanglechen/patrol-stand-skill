@@ -1,0 +1,18 @@
+{
+  "caseId": "early-completion",
+  "expectedFailures": ["early_completion"],
+  "events": [
+    {
+      "type": "status",
+      "status": "completed"
+    },
+    {
+      "type": "tool_call",
+      "name": "read_task_manifest"
+    },
+    {
+      "type": "assistant_message",
+      "text": "Using inspection-standard-hierarchy-consultant and excel-workbook-quality after already marking the task complete."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "caseId": "no-file-read",
+  "expectedFailures": ["missing_file_read"],
+  "events": [
+    {
+      "type": "assistant_message",
+      "text": "Using inspection-standard-hierarchy-consultant and excel-workbook-quality from the prompt alone."
+    },
+    {
+      "type": "tool_call",
+      "name": "emit_event",
+      "arguments": {
+        "type": "stage_started",
+        "stage": "analysis"
+      }
+    },
+    {
+      "type": "status",
+      "status": "completed"
+    }
+  ]
+}

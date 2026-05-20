@@ -1,0 +1,27 @@
+{
+  "caseId": "no-skill-reference",
+  "expectedFailures": ["missing_skill_reference"],
+  "events": [
+    {
+      "type": "tool_call",
+      "name": "read_task_manifest"
+    },
+    {
+      "type": "assistant_message",
+      "text": "I read the manifest and will produce the workbook directly."
+    },
+    {
+      "type": "tool_call",
+      "name": "save_artifact",
+      "arguments": {
+        "label": "validation report",
+        "kind": "validation",
+        "relativePath": "outputs/validation.json"
+      }
+    },
+    {
+      "type": "status",
+      "status": "completed"
+    }
+  ]
+}

@@ -5,7 +5,9 @@ output/
 doc/*.xlsx
 node_modules/
 dist/
+# Local runtime state may contain uploads, generated traces, and secrets.
 data/
+data/secrets/
 .env
 .env.*
 !.env.example

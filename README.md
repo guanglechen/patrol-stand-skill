@@ -5,6 +5,7 @@
 - WebChat/任务台：文本输入、附件上传、任务事件流、阻塞式 ask、产物下载。
 - 本地任务会话：`data/tasks/<taskId>/inputs|workspace|outputs`。
 - Pi 原生适配：`package.json` 中声明 Pi `skills`、`extensions`、`prompts`。
+- 通用 Pi Agent 底座：主执行器只负责加载 skill、挂载文件/终端/ask/artifact 工具，不硬编码巡检业务流程。
 - 沙箱执行：runner 优先使用 Docker per-task container；`SANDBOX_MODE=host` 可用于本地调试。
 - Excel 输出：复用 `scripts/render_workbook.py` 和 `scripts/validate_workbook.py`，最终产物为 `.xlsx`。
 - LLM 分析：材料解析后进入 `llm_analysis` 阶段；配置 `KIMI_API_KEY` 后会通过 Pi CLI 调用 Kimi For Coding，配置 `OPENAI_API_KEY` 后会调用 OpenAI Responses API。
@@ -57,7 +58,7 @@ Pi package manifest 在根 `package.json` 的 `pi` 字段中：
 - `pi/skills/excel-workbook-quality/SKILL.md`
 - `pi/prompts/patrol-agent.md`
 
-本机安装 Pi CLI 后，可按 Pi 本地 package 方式加载该目录。当前本地 Web runner 在 Pi CLI 不可用时仍可完成端到端验证。
+本机安装 Pi CLI 后，可按 Pi 本地 package 方式加载该目录。Pi runner 会从 `package.json` 的 `pi` 字段动态加载 resources，也支持用 `PI_AGENT_SKILLS`、`PI_AGENT_EXTENSIONS`、`PI_AGENT_PROMPTS` 覆盖默认加载项。
 
 ## Runner Modes
 
@@ -86,28 +87,52 @@ KIMI_API_KEY=... npx pi --provider kimi-coding --model kimi-for-coding --no-sess
 KIMI_API_KEY=... PATROL_RUNNER=local LLM_REQUIRED=true npm start
 ```
 
-启用 Pi runner：
+启用通用 Pi runner：
 
 ```bash
-PATROL_RUNNER=pi \
+PI_AGENT_RUNNER=pi \
 PATROL_BRIDGE_TOKEN=local-dev-bridge-token \
-OPENAI_API_KEY=... \
+OPENROUTER_API_KEY=... \
+OPENROUTER_MODEL=deepseek/deepseek-v4-pro \
 npm start
 ```
 
 Pi runner 会通过 `npx pi` 加载：
 
+- `--no-builtin-tools`（默认禁用 Pi 内置 bash/read/edit/write，避免绕过底座权限）
 - `--extension pi/extensions/patrol-session-bridge.ts`
 - `--skill SKILL.md`
 - `--skill pi/skills/excel-workbook-quality`
 - `--append-system-prompt pi/prompts/patrol-agent.md`
 
+bridge extension 给 Pi agent 暴露通用工具：
+
+- `read_task_manifest`
+- `list_task_files` / `read_task_file`
+- `list_skill_files` / `read_skill_file`
+- `run_terminal_command`
+- `emit_event`
+- `ask_user_web`
+- `save_artifact`
+
 如果 Agent 触发 `ask_user_web`，任务会停在 `waiting_user`，用户在 WebChat 回答后再次点击“启动/继续”恢复。
+
+## Secrets
+
+本地密钥只能放在未入库文件：
+
+```text
+.env.local
+data/secrets/openrouter.env
+```
+
+服务和 harness 会自动读取这两个位置。`scripts/check_llm_config.mjs` 会检查密钥是否配置、是否被 git ignore，并且只输出 redacted 状态。
 
 ## Verification
 
 ```bash
 npm run smoke
+npm run harness
 docker compose config
 ```
 

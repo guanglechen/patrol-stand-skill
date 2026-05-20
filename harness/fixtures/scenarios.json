@@ -1,0 +1,82 @@
+[
+  {
+    "id": "mock-complete-fire-safety",
+    "title": "消防巡检职责边界完整链路",
+    "message": "消防部门负责灭火器、消防泵、消防通道巡检；物业负责整改闭环和留痕；标准要求每日频次、异常上报、闭环复核。",
+    "attachments": [
+      {
+        "name": "fire-assets.csv",
+        "mimeType": "text/csv",
+        "content": "对象,责任部门,频次\n灭火器,消防部门,每日\n消防泵,消防部门,每周\n消防通道,物业,每日\n"
+      }
+    ],
+    "steps": [
+      { "type": "run", "expectAskId": "boundary-confirmation" },
+      { "type": "answer", "askId": "boundary-confirmation", "content": "candidate_boundary" },
+      { "type": "run", "expectAskId": "execution-plan-approval" },
+      { "type": "answer", "askId": "execution-plan-approval", "content": "approve_execute" },
+      { "type": "run" }
+    ],
+    "expected": {
+      "status": "completed",
+      "requiredAskIds": ["boundary-confirmation", "execution-plan-approval"],
+      "requiredArtifactLabels": [
+        "材料解析摘要",
+        "Agent 执行计划",
+        "Agent 多轮分析轨迹",
+        "LLM 分析原始响应",
+        "LLM 工作簿结构 JSON",
+        "巡检标准工作簿",
+        "工作簿校验报告",
+        "任务 Manifest"
+      ],
+      "requiredTools": [
+        "extract_materials.py",
+        "agent_planning_loop",
+        "llm_analysis",
+        "render_workbook.py",
+        "validate_workbook.py"
+      ],
+      "forbiddenEventTypes": ["task_failed"],
+      "forbiddenArtifactKinds": []
+    }
+  },
+  {
+    "id": "mock-wait-for-supplement",
+    "title": "材料不足时等待补充",
+    "message": "先帮我分析一下巡检标准，材料后面补。",
+    "steps": [
+      { "type": "run", "expectAskId": "boundary-confirmation" },
+      { "type": "answer", "askId": "boundary-confirmation", "content": "need_more_upload" },
+      { "type": "run", "expectAskId": "boundary-confirmation" }
+    ],
+    "expected": {
+      "status": "waiting_user",
+      "requiredAskIds": ["boundary-confirmation"],
+      "requiredArtifactLabels": ["材料解析摘要"],
+      "requiredTools": ["extract_materials.py"],
+      "forbiddenEventTypes": ["task_failed", "task_completed"],
+      "forbiddenArtifactKinds": ["workbook", "validation"]
+    }
+  },
+  {
+    "id": "mock-plan-revision-gate",
+    "title": "计划确认前支持调整",
+    "message": "园区安防部门负责摄像机、门禁系统、周界报警巡检；弱电外包负责维修，物业负责整改验收，要求频次、异常闭环和留痕。",
+    "steps": [
+      { "type": "run", "expectAskId": "boundary-confirmation" },
+      { "type": "answer", "askId": "boundary-confirmation", "content": "candidate_boundary" },
+      { "type": "run", "expectAskId": "execution-plan-approval" },
+      { "type": "answer", "askId": "execution-plan-approval", "content": "revise_plan" },
+      { "type": "run", "expectAskId": "execution-plan-approval" }
+    ],
+    "expected": {
+      "status": "waiting_user",
+      "requiredAskIds": ["boundary-confirmation", "execution-plan-approval"],
+      "requiredArtifactLabels": ["材料解析摘要", "Agent 执行计划", "Agent 多轮分析轨迹"],
+      "requiredTools": ["extract_materials.py", "agent_planning_loop"],
+      "forbiddenEventTypes": ["task_failed", "task_completed"],
+      "forbiddenArtifactKinds": ["workbook", "validation"]
+    }
+  }
+]

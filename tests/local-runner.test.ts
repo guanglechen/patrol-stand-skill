@@ -149,3 +149,7 @@ assert.ok(db.listArtifacts(mockTaskId).some((artifact) => artifact.label === "LL
 assert.ok((await eventBus.history(mockTaskId)).some((event) => event.tool === "llm_analysis" && event.type === "tool_completed"));
 
 await fs.rm(tempDir, { recursive: true, force: true });
+
+// Keep this conceptual Pi harness regression covered by the existing npm test entry.
+const { runPiHarnessScoringRegression } = await import("./pi-harness-scoring.test.js");
+await runPiHarnessScoringRegression();
